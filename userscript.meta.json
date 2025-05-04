@@ -3,7 +3,9 @@
   "namespace": "https://skk.moe",
   "grant": [
     "unsafeWindow",
-    "GM.notification"
+    "GM.notification",
+    "GM_getValue",
+    "GM_setValue"
   ],
   "run-at": "document-start",
   "match": [
