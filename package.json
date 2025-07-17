@@ -12,7 +12,7 @@
     "build": "rollup -c rollup.config.ts --configPlugin=swc3 --bundleConfigAsCjs",
     "prerelease": "pnpm run lint && pnpm run build",
     "release": "bumpp --all --commit \"release: v%s\" --tag \"v%s\" --push",
-    "postrelease": "gh release create v$(node -p \"require('./package.json').version\") dist/*.js --generate-notes",
+    "postrelease": "gh release create v$(node -p \"require('./package.json').version\") dist/*.js --repo RainkQ/Make-Bilibili-Great-Than-Ever-Before --generate-notes",
     "release:force": "git tag -d v$(node -p \"require('./package.json').version\") && git push --delete origin v$(node -p \"require('./package.json').version\") && pnpm run release"
   },
   "keywords": [
