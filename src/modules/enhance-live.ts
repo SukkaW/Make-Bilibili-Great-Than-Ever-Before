@@ -10,7 +10,7 @@ const enhanceLive: MakeBilibiliGreatThanEverBeforeModule = {
       'use strict';
 
       // jump to actual room if live streaming is nested
-      const jumpInterval = setInterval(() => {
+      setInterval(() => {
         const nestedPage = document.querySelector('iframe[src*=blanc]');
         if (nestedPage) {
           (unsafeWindow as Window).location.assign((nestedPage as HTMLIFrameElement).src);
@@ -43,7 +43,7 @@ const enhanceLive: MakeBilibiliGreatThanEverBeforeModule = {
         = livePlayer.getPlayerInfo().qualityCandidates[0].qn;
 
       // switch quality
-      const switchInterval = setInterval(() => {
+      setInterval(() => {
         const currentPathname = new URL(
           livePlayer.getPlayerInfo().playurl
         ).pathname;
