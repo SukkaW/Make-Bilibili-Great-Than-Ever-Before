@@ -1,6 +1,6 @@
 {
   "name": "Make Bilibili Great Than Ever Before",
-  "namespace": "https://skk.moe",
+  "namespace": "https://github.com/rainkq",
   "grant": [
     "unsafeWindow",
     "GM.notification"
@@ -12,6 +12,6 @@
     "https://live.bilibili.com/*",
     "https://space.bilibili.com/*"
   ],
-  "updateURL": "https://unpkg.com/make-bilibili-great-than-ever-before@latest/dist/make-bilibili-great-than-ever-before.meta.js",
-  "downloadURL": "https://unpkg.com/make-bilibili-great-than-ever-before@latest/dist/make-bilibili-great-than-ever-before.user.js"
+  "updateURL": "https://raw.githubusercontent.com/rainkq/Make-Bilibili-Great-Than-Ever-Before/main/dist/make-bilibili-great-than-ever-before.meta.js",
+  "downloadURL": "https://raw.githubusercontent.com/rainkq/Make-Bilibili-Great-Than-Ever-Before/main/dist/make-bilibili-great-than-ever-before.user.js"
 }

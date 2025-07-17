@@ -9,7 +9,7 @@ The name came from one of [Donald J. Trump's 2024 Presidential Campaign Slogan](
 ## Installation
 
 ```
-https://unpkg.com/make-bilibili-great-than-ever-before@latest/dist/make-bilibili-great-than-ever-before.user.js
+https://raw.githubusercontent.com/rainkq/Make-Bilibili-Great-Than-Ever-Before/main/dist/make-bilibili-great-than-ever-before.user.js
 ```
 
 ## Feature
@@ -34,12 +34,4 @@ https://unpkg.com/make-bilibili-great-than-ever-before@latest/dist/make-bilibili
 
 ----
 
-**Make Bilibili Great Than Ever Before** © [Sukka](https://github.com/SukkaW), Authored and maintained by Sukka with help from contributors ([list](https://github.com/SukkaW/Make-Bilibili-Great-Than-Ever-Before/graphs/contributors)).
-
-> [Personal Website](https://skk.moe) · [Blog](https://blog.skk.moe) · GitHub [@SukkaW](https://github.com/SukkaW) · Telegram Channel [@SukkaChannel](https://t.me/SukkaChannel) · Mastodon [@sukka@acg.mn](https://acg.mn/@sukka) · Bluesky [@skk.moe](https://bsky.app/profile/skk.moe) · Twitter [@isukkaw](https://twitter.com/isukkaw) · Keybase [@sukka](https://keybase.io/sukka)
-
-<p align="center">
-  <a href="https://github.com/sponsors/SukkaW/">
-    <img src="https://sponsor.cdn.skk.moe/sponsors.svg"/>
-  </a>
-</p>
+**Make Bilibili Great Than Ever Before** © [rainkq](https://github.com/rainkq), Authored and maintained by rainkq with help from contributors ([list](https://github.com/rainkq/Make-Bilibili-Great-Than-Ever-Before/graphs/contributors)).

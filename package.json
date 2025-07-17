@@ -2,7 +2,7 @@
   "name": "make-bilibili-great-than-ever-before",
   "version": "1.6.0",
   "description": "A fork of @kookxiang's userscript \"Make Bilibili Great Again\", but with many experimental features",
-  "repository": "https://github.com/SukkaW/Make-Bilibili-Great-Than-Ever-Before",
+  "repository": "https://github.com/rainkq/Make-Bilibili-Great-Than-Ever-Before",
   "main": "./dist/make-bilibili-great-than-ever-before.user.js",
   "files": [
     "dist"
@@ -17,7 +17,7 @@
     "userscript",
     "bilibili"
   ],
-  "author": "SukkaW <https://skk.moe>",
+  "author": "rainkq",
   "license": "MIT",
   "dependencies": {
     "fake-indexeddb": "^6.0.0",
