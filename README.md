@@ -9,7 +9,7 @@ The name came from one of [Donald J. Trump's 2024 Presidential Campaign Slogan](
 ## Installation
 
 ```
-https://raw.githubusercontent.com/rainkq/Make-Bilibili-Great-Than-Ever-Before/main/dist/make-bilibili-great-than-ever-before.user.js
+https://github.com/rainkq/Make-Bilibili-Great-Than-Ever-Before/releases/latest/download/make-bilibili-great-than-ever-before.user.js
 ```
 
 ## Feature
