@@ -1,107 +1,67 @@
-import { logger } from '../logger';
-import type { MakeBilibiliGreatThanEverBeforeModule } from '../types';
-import { ErrorCounter } from '../utils/error-counter';
-import { getUrlFromRequest } from '../utils/get-url-from-request';
-import { tagged as css } from 'foxts/tagged';
-import flru from 'flru';
-import { createRetrieKeywordFilter } from 'foxts/retrie';
-
-declare global {
-  interface Window {
-    disableMcdn?: boolean
-  }
-}
-
-// const mcdnRegexp = /[\dxy]+\.mcdn\.bilivideo\.cn:\d+/;
-const qualityRegexp = /(live-bvc\/\d+\/live_\d+_\d+)_\w+/;
-const hevcRegexp = /(\d+)_(?:mini|pro)hevc/g;
-
-const smtcdnsRegexp = /[\w.]+\.smtcdns.net\/([\w-]+\.bilivideo.com\/)/;
-
-const liveCdnUrlKwFilter = createRetrieKeywordFilter([
-  '.bilivideo.',
-  '.m3u8',
-  '.m4s',
-  '.flv'
-]);
+import type { MakeBilibiliGreatThanEverBeforeModule } from '../types'
+import { tagged as css } from 'foxts/tagged'
 
 const enhanceLive: MakeBilibiliGreatThanEverBeforeModule = {
   name: 'enhance-live',
-  description: '增强直播（原画画质、其他修复）',
-  onLive({ addStyle, onBeforeFetch, onResponse }) {
-    let forceHighestQuality = true;
+  description: '增强直播（自动切换最高画质）',
+  onLive({ addStyle }) {
+    // from https://greasyfork.org/zh-CN/scripts/467427-bilibili-%E8%87%AA%E5%8A%A8%E5%88%87%E6%8D%A2%E7%9B%B4%E6%92%AD%E7%94%BB%E8%B4%A8%E8%87%B3%E6%9C%80%E9%AB%98%E7%94%BB%E8%B4%A8
+    ;(async function () {
+      'use strict'
 
-    const urlMap = flru<string>(300);
-
-    // 还得帮叔叔修 bug，唉
-    addStyle(css`div[data-cy=EvaRenderer_LayerWrapper]:has(.player) { z-index: 999999; }`);
-
-    // 干掉些直播间没用的东西
-    addStyle(css`#welcome-area-bottom-vm, .web-player-icon-roomStatus { display: none !important; }`);
-
-    // 修复直播画质
-    onBeforeFetch((fetchArgs) => {
-      if (!forceHighestQuality) {
-        return fetchArgs;
-      }
-
-      try {
-        const url = getUrlFromRequest(fetchArgs[0]);
-        if (url == null) {
-          return fetchArgs;
+      // jump to actual room if live streaming is nested
+      setInterval(() => {
+        const nestedPage = document.querySelector('iframe[src*=blanc]')
+        if (nestedPage) {
+          ;(unsafeWindow as any).location.href = (
+            nestedPage as HTMLIFrameElement
+          ).src
         }
+      }, 1000)
 
-        let finalUrl = url;
-        // if (mcdnRegexp.test(url) && disableMcdn) {
-        //   return Promise.reject();
-        // }
-        if (qualityRegexp.test(url)) {
-          finalUrl = url
-            .replace(qualityRegexp, '$1')
-            .replaceAll(hevcRegexp, '$1');
+      // hide the loading gif
+      addStyle(css`.web-player-loading { opacity: 0; }`)
 
-          logger.info('force quality', url, '->', finalUrl);
+      // make sure the player is ready
+      await new Promise<void>((resolve) => {
+        const timer = setInterval(() => {
+          if (
+            (unsafeWindow as any).livePlayer &&
+            (unsafeWindow as any).livePlayer.getPlayerInfo &&
+            (unsafeWindow as any).livePlayer.getPlayerInfo().playurl &&
+            (unsafeWindow as any).livePlayer.switchQuality
+          ) {
+            clearInterval(timer)
+            resolve()
+          }
+        }, 1000)
+      })
 
-          urlMap.set(finalUrl, url);
+      const livePlayer = (unsafeWindow as any).livePlayer
+
+      // get initial pathname of video source and number of highest quality
+      const initialPathname = new URL(
+        livePlayer.getPlayerInfo().playurl,
+      ).pathname
+      const highestQualityNumber =
+        livePlayer.getPlayerInfo().qualityCandidates[0].qn
+
+      // switch quality
+      setInterval(() => {
+        const currentPathname = new URL(
+          livePlayer.getPlayerInfo().playurl,
+        ).pathname
+        const currentQualityNumber =
+          livePlayer.getPlayerInfo().quality
+        if (
+          currentPathname === initialPathname ||
+          currentQualityNumber !== highestQualityNumber
+        ) {
+          livePlayer.switchQuality(highestQualityNumber)
         }
-        if (smtcdnsRegexp.test(finalUrl)) {
-          finalUrl = finalUrl.replace(smtcdnsRegexp, '$1');
-          logger.info('drop smtcdns', url, '->', finalUrl);
-        }
+      }, 1000)
+    })()
+  },
+}
 
-        fetchArgs[0] = finalUrl;
-        return fetchArgs;
-      } catch {
-        return fetchArgs;
-      }
-    });
-
-    const errorCounter = new ErrorCounter(1000 * 30);
-
-    onResponse((resp, fetchArgs, $fetch) => {
-      if (liveCdnUrlKwFilter(resp.url) && !resp.ok) {
-        logger.error('force quality fail', resp.url, resp.status);
-        errorCounter.recordError();
-
-        if (forceHighestQuality && errorCounter.getErrorCount() >= 5) {
-          forceHighestQuality = false;
-          logger.error('Force quality failed! Falling back');
-          GM.notification(
-            '[Make Bilibili Great Then Ever Before] 已为您自动切换至播放器上选择的清晰度.',
-            '最高清晰度可能不可用'
-          );
-        }
-
-        // If we have old url, we fetch old quality again
-        if (urlMap.has(resp.url)) {
-          const oldUrl = urlMap.get(resp.url)!;
-          logger.warn('');
-          return $fetch(oldUrl, fetchArgs[1]);
-        }
-      }
-      return resp;
-    });
-  }
-};
-
-export default enhanceLive;
+export default enhanceLive
