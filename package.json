@@ -1,6 +1,6 @@
 {
   "name": "make-bilibili-great-than-ever-before",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "description": "A fork of @kookxiang's userscript \"Make Bilibili Great Again\", but with many experimental features",
   "repository": "https://github.com/rainkq/Make-Bilibili-Great-Than-Ever-Before",
   "main": "./dist/make-bilibili-great-than-ever-before.user.js",
@@ -11,7 +11,8 @@
     "lint": "eslint --format=sukka .",
     "build": "rollup -c rollup.config.ts --configPlugin=swc3 --bundleConfigAsCjs",
     "prerelease": "pnpm run lint && pnpm run build",
-    "release": "bumpp -r --all --commit \"release: %s\" --tag \"%s\""
+    "release": "bumpp --all --commit \"release: v%s\" --tag \"v%s\" --push",
+    "postrelease": "gh release create v$(node -p \"require('./package.json').version\") dist/*.js --generate-notes"
   },
   "keywords": [
     "userscript",
