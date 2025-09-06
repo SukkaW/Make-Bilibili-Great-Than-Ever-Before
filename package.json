@@ -1,6 +1,6 @@
 {
   "name": "make-bilibili-great-than-ever-before",
-  "version": "1.6.0",
+  "version": "1.6.1-beta.1",
   "description": "A fork of @kookxiang's userscript \"Make Bilibili Great Again\", but with many experimental features",
   "repository": "https://github.com/SukkaW/Make-Bilibili-Great-Than-Ever-Before",
   "main": "./dist/make-bilibili-great-than-ever-before.user.js",
