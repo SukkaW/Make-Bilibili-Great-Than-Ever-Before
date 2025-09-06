@@ -8,10 +8,10 @@ class ListNode {
 export class ErrorCounter {
   private head: ListNode | null = null;
   private tail: ListNode | null = null;
-  private intervalId: number;
+  private readonly intervalId: number;
   private $size = 0;
 
-  constructor(private timeWindow = 10000) {
+  constructor(private readonly timeWindow = 10000) {
     this.intervalId = self.setInterval(() => this.cleanup(), 1000);
   }
 
