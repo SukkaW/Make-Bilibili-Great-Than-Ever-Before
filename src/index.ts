@@ -79,7 +79,19 @@ import forceEnable4K from './modules/force-enable-4k';
   const hostname = unsafeWindow.location.hostname;
   const pathname = unsafeWindow.location.pathname;
 
+  const storage: { [id: string]: { enabled: boolean, description: string } } = GM_getValue("plugins", {});
+  console.log(storage)
   for (const module of modules) {
+    if (storage[module.name] && storage[module.name].enabled === false) {
+      logger.debug(`[${module.name}] skipped`)
+      continue
+    } else {
+      storage[module.name] = {
+        enabled: true,
+        description: module.description
+      }
+      logger.debug(`[${module.name}] loaded`)
+    }
     if (module.any) {
       logger.log(`[${module.name}] "any" ${unsafeWindow.location.href}`);
       module.any(hook);
@@ -277,4 +289,5 @@ import forceEnable4K from './modules/force-enable-4k';
   // unsafeWindow.XMLHttpRequest.prototype.getAllResponseHeaders.toString = function () {
   //   return XHRBefore.getAllResponseHeaders.toString();
   // };
+  setTimeout(GM_setValue("plugins", storage), 0);
 })(unsafeWindow);
