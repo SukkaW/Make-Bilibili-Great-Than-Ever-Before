@@ -62,7 +62,6 @@ const noWebRTC: MakeBilibiliGreatThanEverBeforeModule = {
         this.prototype.onmessage = noop;
       }
 
-      // eslint-disable-next-line @typescript-eslint/class-methods-use-this -- toString
       toString() {
         return '[object RTCDataChannel]';
       }
@@ -84,7 +83,6 @@ const noWebRTC: MakeBilibiliGreatThanEverBeforeModule = {
         };
       }
 
-      // eslint-disable-next-line @typescript-eslint/class-methods-use-this -- toString
       toString() {
         return '[object RTCSessionDescription]';
       }
@@ -96,7 +94,6 @@ const noWebRTC: MakeBilibiliGreatThanEverBeforeModule = {
     });
 
     class MockRTCPeerConnection implements Pick<RTCPeerConnection, 'close' | 'createDataChannel' | 'createOffer' | 'setRemoteDescription' | 'addEventListener' | 'removeEventListener' | 'addIceCandidate' | 'setLocalDescription' | 'setConfiguration' | 'localDescription' | 'createAnswer' | 'onicecandidate'> {
-      // eslint-disable-next-line @typescript-eslint/class-methods-use-this -- mock
       createDataChannel() {
         return new MockDataChannel() as RTCDataChannel;
       }
@@ -133,7 +130,6 @@ const noWebRTC: MakeBilibiliGreatThanEverBeforeModule = {
         this.prototype.onicecandidate = noop;
       }
 
-      // eslint-disable-next-line @typescript-eslint/class-methods-use-this -- mock
       toString() {
         return '[object RTCPeerConnection]';
       }

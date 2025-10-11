@@ -18,6 +18,7 @@ https://unpkg.com/make-bilibili-great-than-ever-before@latest/dist/make-bilibili
 - Prevent Bilibili using AV1 codec to save money (on CR's coffins) and burn your CPU/GPU.
 - Enhance Live (Force original stream quality and some other fixes)
 - Defuse article clipboard prevention and enables free copy
+- Force enable 4K Player even on low-end device (like Chromebook or Linux device)
 - Prevent Bilibili from saving money (on CR's coffins) by using cheap yet slow PCDN
 - Prevent Bilibili from saving money (on CR's coffins) by stealing your bandwidth through WebRTC P2P
 - Remove Homepage Ads and style optimization

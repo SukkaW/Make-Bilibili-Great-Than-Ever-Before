@@ -11,7 +11,8 @@
   "match": [
     "https://www.bilibili.com/*",
     "https://t.bilibili.com/*",
-    "https://live.bilibili.com/*"
+    "https://live.bilibili.com/*",
+    "https://space.bilibili.com/*"
   ],
   "updateURL": "https://unpkg.com/make-bilibili-great-than-ever-before@latest/dist/make-bilibili-great-than-ever-before.meta.js",
   "downloadURL": "https://unpkg.com/make-bilibili-great-than-ever-before@latest/dist/make-bilibili-great-than-ever-before.user.js"

@@ -4,6 +4,7 @@ import { ErrorCounter } from '../utils/error-counter';
 import { getUrlFromRequest } from '../utils/get-url-from-request';
 import { tagged as css } from 'foxts/tagged';
 import flru from 'flru';
+import { createRetrieKeywordFilter } from 'foxts/retrie';
 
 declare global {
   interface Window {
@@ -14,6 +15,15 @@ declare global {
 // const mcdnRegexp = /[\dxy]+\.mcdn\.bilivideo\.cn:\d+/;
 const qualityRegexp = /(live-bvc\/\d+\/live_\d+_\d+)_\w+/;
 const hevcRegexp = /(\d+)_(?:mini|pro)hevc/g;
+
+const smtcdnsRegexp = /[\w.]+\.smtcdns.net\/([\w-]+\.bilivideo.com\/)/;
+
+const liveCdnUrlKwFilter = createRetrieKeywordFilter([
+  '.bilivideo.',
+  '.m3u8',
+  '.m4s',
+  '.flv'
+]);
 
 const enhanceLive: MakeBilibiliGreatThanEverBeforeModule = {
   name: 'enhance-live',
@@ -40,21 +50,26 @@ const enhanceLive: MakeBilibiliGreatThanEverBeforeModule = {
         if (url == null) {
           return fetchArgs;
         }
+
+        let finalUrl = url;
         // if (mcdnRegexp.test(url) && disableMcdn) {
         //   return Promise.reject();
         // }
         if (qualityRegexp.test(url)) {
-          const newUrl = url
+          finalUrl = url
             .replace(qualityRegexp, '$1')
             .replaceAll(hevcRegexp, '$1');
 
-          logger.info('force quality', url, '->', newUrl);
+          logger.info('force quality', url, '->', finalUrl);
 
-          urlMap.set(newUrl, url);
-
-          fetchArgs[0] = newUrl;
+          urlMap.set(finalUrl, url);
+        }
+        if (smtcdnsRegexp.test(finalUrl)) {
+          finalUrl = finalUrl.replace(smtcdnsRegexp, '$1');
+          logger.info('drop smtcdns', url, '->', finalUrl);
         }
 
+        fetchArgs[0] = finalUrl;
         return fetchArgs;
       } catch {
         return fetchArgs;
@@ -64,7 +79,7 @@ const enhanceLive: MakeBilibiliGreatThanEverBeforeModule = {
     const errorCounter = new ErrorCounter(1000 * 30);
 
     onResponse((resp, fetchArgs, $fetch) => {
-      if ((resp.url.includes('.m3u8') || resp.url.includes('.m4s')) && !resp.ok) {
+      if (liveCdnUrlKwFilter(resp.url) && !resp.ok) {
         logger.error('force quality fail', resp.url, resp.status);
         errorCounter.recordError();
 
@@ -80,6 +95,7 @@ const enhanceLive: MakeBilibiliGreatThanEverBeforeModule = {
         // If we have old url, we fetch old quality again
         if (urlMap.has(resp.url)) {
           const oldUrl = urlMap.get(resp.url)!;
+          logger.warn('');
           return $fetch(oldUrl, fetchArgs[1]);
         }
       }

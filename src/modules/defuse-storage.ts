@@ -3,7 +3,7 @@ import type { MakeBilibiliGreatThanEverBeforeModule } from '../types';
 import {
   indexedDB as mockIndexedDB
 } from 'fake-indexeddb';
-import { retrie } from 'foxts/retrie';
+import { createRetrieKeywordFilter } from 'foxts/retrie';
 import { createFakeNativeFunction } from '../utils/fake-native-function';
 import { noop } from 'foxts/noop';
 
@@ -16,12 +16,12 @@ const DEFUSED_INDEXEDDB = new Set([
   'bp_nc_loader_config'
 ]);
 
-const defusedPatterm = retrie([
+const defusedPatterm = createRetrieKeywordFilter([
   'MIRROR_TRACK', '__LOG', 'BILI_MIRROR_REPORT_POOL', 'BILI_MIRROR_RESOURCE_TIME', 'reporter-pb',
   'pbp3',
   'pcdn', 'nc_loader',
   'iconify'
-]).toRe();
+]);
 
 const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
   name: 'disable-av1',
@@ -39,7 +39,7 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
 
     for (let i = 0; i < unsafeWindow.localStorage.length; i++) {
       const key = unsafeWindow.localStorage.key(i);
-      if (key && defusedPatterm.test(key)) {
+      if (key && defusedPatterm(key)) {
         unsafeWindow.localStorage.removeItem(key);
         logger.info('localStorage removed!', { key });
       }
@@ -47,7 +47,7 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
 
     ((origOpen) => {
       unsafeWindow.indexedDB.open = createFakeNativeFunction(function (this: IDBFactory, name, version) {
-        if (defusedPatterm.test(name)) {
+        if (defusedPatterm(name)) {
           logger.trace('IndexedDB mocked!', { name, version });
           return mockIndexedDB.open(name, version);
         }
@@ -66,22 +66,22 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
         setItem(key, value) {
           keys.push(key);
 
-          if (defusedPatterm.test(key)) {
+          if (defusedPatterm(key)) {
             logger.trace('localStorage.setItem mocked:', { key, value });
             store.set(key, value);
           } else {
-            logger.trace('localStorage.setItem:', { key, value });
+            // logger.trace('localStorage.setItem:', { key, value });
             orignalLocalStorage.setItem(key, value);
           }
         },
         getItem(key) {
-          if (defusedPatterm.test(key)) {
+          if (defusedPatterm(key)) {
             const value = store.has(key) ? store.get(key)! : null;
             logger.trace('localStorage.getItem mocked:', { key, value });
             return value;
           }
 
-          logger.trace('localStorage.getItem:', { key });
+          // logger.trace('localStorage.getItem:', { key });
           return orignalLocalStorage.getItem(key);
         },
         removeItem(key) {
@@ -90,11 +90,11 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
             keys.splice(keys.indexOf(key), 1);
           }
 
-          if (defusedPatterm.test(key)) {
+          if (defusedPatterm(key)) {
             logger.trace('localStorage.removeItem mocked:', { key });
             store.delete(key);
           } else {
-            logger.trace('localStorage.removeItem:', { key });
+            // logger.trace('localStorage.removeItem:', { key });
             orignalLocalStorage.removeItem(key);
           }
         },

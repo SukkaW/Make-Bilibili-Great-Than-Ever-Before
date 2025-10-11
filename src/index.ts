@@ -17,6 +17,7 @@ import type { MakeBilibiliGreatThanEverBeforeHook, MakeBilibiliGreatThanEverBefo
 import { onDOMContentLoaded } from './utils/on-load-event';
 import disableAV1 from './modules/disable-av1';
 import defuseStorage from './modules/defuse-storage';
+import forceEnable4K from './modules/force-enable-4k';
 
 ; ((unsafeWindow) => {
   const modules: MakeBilibiliGreatThanEverBeforeModule[] = [
@@ -25,6 +26,7 @@ import defuseStorage from './modules/defuse-storage';
     disableAV1,
     enhanceLive,
     fixCopyInCV,
+    forceEnable4K,
     noAd,
     noP2P,
     noWebRTC,
