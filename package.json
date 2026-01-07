@@ -1,6 +1,6 @@
 {
   "name": "make-bilibili-great-than-ever-before",
-  "version": "1.6.5",
+  "version": "1.6.1-beta.1",
   "description": "A fork of @kookxiang's userscript \"Make Bilibili Great Again\", but with many experimental features",
   "repository": "https://github.com/rainkq/Make-Bilibili-Great-Than-Ever-Before",
   "main": "./dist/make-bilibili-great-than-ever-before.user.js",
@@ -22,29 +22,29 @@
   "author": "rainkq",
   "license": "MIT",
   "dependencies": {
-    "fake-indexeddb": "^6.0.0",
+    "fake-indexeddb": "^6.2.2",
     "flru": "^1.0.2",
-    "foxts": "^1.7.0"
+    "foxts": "^3.13.0"
   },
   "devDependencies": {
-    "@eslint-sukka/node": "^6.18.2",
-    "@rollup/plugin-commonjs": "^28.0.3",
+    "@eslint-sukka/node": "^6.23.1",
+    "@rollup/plugin-commonjs": "^28.0.6",
     "@rollup/plugin-node-resolve": "^16.0.1",
     "@rollup/plugin-replace": "^6.0.2",
-    "@swc/core": "^1.10.16",
+    "@swc/core": "^1.13.5",
     "@swc/helpers": "^0.5.17",
     "@types/greasemonkey": "^4.0.7",
-    "@types/node": "^22.14.1",
-    "bumpp": "^10.1.0",
-    "eslint": "^9.25.1",
-    "eslint-config-sukka": "^6.18.2",
-    "eslint-formatter-sukka": "^6.18.2",
-    "rollup": "^4.40.0",
+    "@types/node": "^22.18.1",
+    "bumpp": "^10.2.3",
+    "eslint": "^9.35.0",
+    "eslint-config-sukka": "^6.23.1",
+    "eslint-formatter-sukka": "^6.23.1",
+    "rollup": "^4.50.0",
     "rollup-plugin-swc3": "^0.12.1",
-    "rollup-plugin-userscript-metablock": "^0.4.2",
-    "typescript": "^5.8.3"
+    "rollup-plugin-userscript-metablock": "^0.4.3",
+    "typescript": "^5.9.2"
   },
-  "packageManager": "pnpm@10.9.0",
+  "packageManager": "pnpm@10.15.1",
   "pnpm": {
     "onlyBuiltDependencies": [
       "@swc/core",
