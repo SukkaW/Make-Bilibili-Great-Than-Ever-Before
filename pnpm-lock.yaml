@@ -18,8 +18,8 @@ importers:
         specifier: ^1.0.2
         version: 1.0.2
       foxts:
-        specifier: ^3.15.0
-        version: 3.15.0
+        specifier: ^5.0.4
+        version: 5.0.4
     devDependencies:
       '@eslint-sukka/node':
         specifier: ^8.2.0
@@ -1056,12 +1056,6 @@ packages:
   fast-deep-equal@3.1.3:
     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
 
-  fast-escape-html@1.1.0:
-    resolution: {integrity: sha512-nRvjfywv8gzIBs0fM/ht6S5scNUamm+o+91p/69cYYNWODb7b/UiQfjFx+6n8NMtdHs6K80kh+hW1dPNS/opIA==}
-
-  fast-escape-regexp@1.0.1:
-    resolution: {integrity: sha512-VSnAgWEYHdyyVegVfN/TUCa6hDQ7PIxdIJVWq4RWqyegkG9zFwNb21uykT0hAyvKlKnFR+zOu/25434pHBXtLA==}
-
   fast-json-stable-stringify@2.1.0:
     resolution: {integrity: sha512-lhd/wF+Lk98HZoTCtlVraHtfh5XYijIjalXck7saUtuanSDyLMxnHhSXEDJqHxD7msR8D0uCmqlkwjCV8xvwHw==}
 
@@ -1095,9 +1089,6 @@ packages:
   flru@1.0.2:
     resolution: {integrity: sha512-kWyh8ADvHBFz6ua5xYOPnUroZTT/bwWfrCeL0Wj1dzG4/YOmOcfJ99W8dOVyyynJN35rZ9aCOtHChqQovV7yog==}
     engines: {node: '>=6'}
-
-  foxts@3.15.0:
-    resolution: {integrity: sha512-XaSnlPKgD23NGdfuUHAX50V9h17bavUEZthg3SBO8ajT3D0pFg6KhYRvKNOlB+t7MpKZ1fj22bUPssH5PY0h4w==}
 
   foxts@5.0.4:
     resolution: {integrity: sha512-5NcXkeIE+z8pyNQYW3lfJWR6ig80GkrOcdi3JY3bmzHieQHwpVq7JKYUrsgFjW4lXIitqOYkUF9SRauwlBjIjw==}
@@ -2459,10 +2450,6 @@ snapshots:
 
   fast-deep-equal@3.1.3: {}
 
-  fast-escape-html@1.1.0: {}
-
-  fast-escape-regexp@1.0.1: {}
-
   fast-json-stable-stringify@2.1.0: {}
 
   fast-levenshtein@2.0.6: {}
@@ -2488,11 +2475,6 @@ snapshots:
   flatted@3.3.2: {}
 
   flru@1.0.2: {}
-
-  foxts@3.15.0:
-    dependencies:
-      fast-escape-html: 1.1.0
-      fast-escape-regexp: 1.0.1
 
   foxts@5.0.4: {}
 

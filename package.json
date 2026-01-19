@@ -23,7 +23,7 @@
     "@types/tampermonkey": "^5.0.5",
     "fake-indexeddb": "^6.2.5",
     "flru": "^1.0.2",
-    "foxts": "^3.15.0"
+    "foxts": "^5.0.4"
   },
   "devDependencies": {
     "@eslint-sukka/node": "^8.2.0",

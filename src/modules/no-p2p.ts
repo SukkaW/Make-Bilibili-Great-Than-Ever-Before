@@ -5,13 +5,21 @@ import type { MakeBilibiliGreatThanEverBeforeModule } from '../types';
 import { defineReadonlyProperty } from '../utils/define-readonly-property';
 
 const rBackupCdn = /(?:up|cn-)[\w-]+\.bilivideo\.com/g;
+const isP2PCDN = createRetrieKeywordFilter([
+  'upos-sz-302',
+  '.mcdn.bilivideo',
+  '.szbdyd.com',
+  '.nexusedgeio.com',
+  '.ahdohpiechei.com' // 七牛云 PCDN
+]);
 
 let prevLocationHref = '';
 let prevCdnDomains: string[] = [];
 function getCDNDomain() {
   if (prevLocationHref !== unsafeWindow.location.href || prevCdnDomains.length === 0) {
     try {
-      const matched = Array.from(new Set(Array.from(document.head.innerHTML.matchAll(rBackupCdn), match => match[0])));
+      const matched = Array.from(new Set(Array.from(document.head.innerHTML.matchAll(rBackupCdn), match => match[0]))).filter(domain => !isP2PCDN(domain));
+
       if (matched.length > 0) {
         prevLocationHref = unsafeWindow.location.href;
         prevCdnDomains = matched;
@@ -35,11 +43,6 @@ function getCDNDomain() {
     ? prevCdnDomains[0]
     : prevCdnDomains[Math.floor(Math.random() * prevCdnDomains.length)];
 }
-
-const isP2PCDN = createRetrieKeywordFilter([
-  '.mcdn.bilivideo.cn',
-  '.szbdyd.com'
-]);
 
 const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
   name: 'no-p2p',
@@ -181,18 +184,19 @@ function replaceP2P(url: string | URL, cdnDomainGetter: () => string, meta = '')
       url = new URL(url, unsafeWindow.location.href);
     }
     const hostname = url.hostname;
-    if (hostname.endsWith('.mcdn.bilivideo.cn')) {
-      const cdn = cdnDomainGetter();
-      url.hostname = cdn;
-      url.port = '443';
-      logger.info(`P2P replaced: ${hostname} -> ${cdn}`, { meta });
-    } else if (hostname.endsWith('.szbdyd.com')) {
+    if (hostname.endsWith('.szbdyd.com')) {
       const xy_usource = url.searchParams.get('xy_usource');
       if (xy_usource) {
         url.hostname = xy_usource;
         url.port = '443';
         logger.info(`P2P replaced: ${hostname} -> ${xy_usource}`, { meta });
       }
+    } else {
+      const cdn = cdnDomainGetter();
+      url.protocol = 'https:';
+      url.hostname = cdn;
+      url.port = '443';
+      logger.info(`P2P replaced: ${hostname} -> ${cdn}`, { meta });
     }
 
     return url;
