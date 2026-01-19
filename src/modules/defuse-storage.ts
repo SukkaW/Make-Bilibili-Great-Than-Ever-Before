@@ -24,8 +24,8 @@ const defusedPatterm = createRetrieKeywordFilter([
 ]);
 
 const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
-  name: 'disable-av1',
-  description: '防止叔叔用 AV1 格式燃烧你的 CPU 并省下棺材钱',
+  name: 'disable-storage',
+  description: '防止叔叔浪费你宝贵的 SSD 寿命',
   any() {
     DEFUSED_INDEXEDDB.forEach((name) => {
       const req = mockIndexedDB.deleteDatabase(name);

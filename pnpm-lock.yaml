@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@types/tampermonkey':
+        specifier: ^5.0.5
+        version: 5.0.5
       fake-indexeddb:
         specifier: ^6.2.5
         version: 6.2.5
@@ -36,9 +39,6 @@ importers:
       '@swc/helpers':
         specifier: ^0.5.18
         version: 0.5.18
-      '@types/greasemonkey':
-        specifier: ^4.0.7
-        version: 4.0.7
       '@types/node':
         specifier: ^22.19.7
         version: 22.19.7
@@ -536,9 +536,6 @@ packages:
   '@types/estree@1.0.8':
     resolution: {integrity: sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w==}
 
-  '@types/greasemonkey@4.0.7':
-    resolution: {integrity: sha512-DuYBRf/T4zixO/xhQ3eicZCBjjOgbSSXuHP5XkLNf/UBayrJpBniP9il/AQaPy0lffl4Bco48zgHL+pZmQ6Q0A==}
-
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
 
@@ -547,6 +544,9 @@ packages:
 
   '@types/resolve@1.20.2':
     resolution: {integrity: sha512-60BCwRFOZCQhDncwQdxxeOEEkbc5dIMccYLwbxsS4TUNeVECQ/pBJ0j09mrHOl/JJvpRPGwO9SvE4nR2Nb/a4Q==}
+
+  '@types/tampermonkey@5.0.5':
+    resolution: {integrity: sha512-ZWitwJH4T/jcQiynhc3I5DNiwlsDzVTKPXg6A8ltTw3SDuf0b00bNRSV0Z/yldnhhBi9e8g8vY/X3LVSQcaCKQ==}
 
   '@typescript-eslint/eslint-plugin@8.53.0':
     resolution: {integrity: sha512-eEXsVvLPu8Z4PkFibtuFJLJOTAV/nPdgtSjkGoPpddpFk3/ym2oy97jynY6ic2m6+nc5M8SE1e9v/mHKsulcJg==}
@@ -1875,8 +1875,6 @@ snapshots:
 
   '@types/estree@1.0.8': {}
 
-  '@types/greasemonkey@4.0.7': {}
-
   '@types/json-schema@7.0.15': {}
 
   '@types/node@22.19.7':
@@ -1884,6 +1882,8 @@ snapshots:
       undici-types: 6.21.0
 
   '@types/resolve@1.20.2': {}
+
+  '@types/tampermonkey@5.0.5': {}
 
   '@typescript-eslint/eslint-plugin@8.53.0(@typescript-eslint/parser@8.53.0(eslint@9.39.2(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.2(jiti@2.6.1))(typescript@5.9.3)':
     dependencies:

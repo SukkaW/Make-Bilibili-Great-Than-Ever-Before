@@ -20,6 +20,7 @@
   "author": "SukkaW <https://skk.moe>",
   "license": "MIT",
   "dependencies": {
+    "@types/tampermonkey": "^5.0.5",
     "fake-indexeddb": "^6.2.5",
     "flru": "^1.0.2",
     "foxts": "^3.15.0"
@@ -31,7 +32,6 @@
     "@rollup/plugin-replace": "^6.0.3",
     "@swc/core": "^1.15.8",
     "@swc/helpers": "^0.5.18",
-    "@types/greasemonkey": "^4.0.7",
     "@types/node": "^22.19.7",
     "bumpp": "^10.4.0",
     "eslint": "^9.39.2",

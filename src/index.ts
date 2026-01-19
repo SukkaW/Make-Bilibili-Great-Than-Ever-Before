@@ -18,8 +18,9 @@ import { onDOMContentLoaded } from './utils/on-load-event';
 import disableAV1 from './modules/disable-av1';
 import defuseStorage from './modules/defuse-storage';
 import forceEnable4K from './modules/force-enable-4k';
+import { initModuleMenu } from './utils/module-menu';
 
-; ((unsafeWindow) => {
+(async (unsafeWindow) => {
   const modules: MakeBilibiliGreatThanEverBeforeModule[] = [
     defuseStorage,
     defuseSpyware,
@@ -79,54 +80,63 @@ import forceEnable4K from './modules/force-enable-4k';
   const hostname = unsafeWindow.location.hostname;
   const pathname = unsafeWindow.location.pathname;
 
-  for (const module of modules) {
-    if (module.any) {
-      logger.log(`[${module.name}] "any" ${unsafeWindow.location.href}`);
-      module.any(hook);
+  for (let i = 0; i < modules.length; i++) {
+    const mod = modules[i];
+
+    // eslint-disable-next-line no-await-in-loop -- GM.getValue costs a little as shit
+    const enabled = await initModuleMenu(mod);
+    if (!enabled) {
+      logger.log(`[${mod.name}] disabled -- skipping`);
+      continue;
+    }
+
+    if (mod.any) {
+      logger.log(`[${mod.name}] "any" ${unsafeWindow.location.href}`);
+      mod.any(hook);
     }
     switch (hostname) {
       case 'www.bilibili.com': {
         if (pathname.startsWith('/read/cv')) {
-          if (module.onCV) {
-            logger.log(`[${module.name}] "onCV" ${unsafeWindow.location.href}`);
-            module.onCV(hook);
+          if (mod.onCV) {
+            logger.log(`[${mod.name}] "onCV" ${unsafeWindow.location.href}`);
+            mod.onCV(hook);
           }
         } else if (pathname.startsWith('/video/')) {
-          if (module.onVideo) {
-            logger.log(`[${module.name}] "onVideo" ${unsafeWindow.location.href}`);
-            module.onVideo(hook);
+          if (mod.onVideo) {
+            logger.log(`[${mod.name}] "onVideo" ${unsafeWindow.location.href}`);
+            mod.onVideo(hook);
           }
-          if (module.onVideoOrBangumi) {
-            logger.log(`[${module.name}] "onVideoOrBangumi" ${unsafeWindow.location.href}`);
-            module.onVideoOrBangumi(hook);
+          if (mod.onVideoOrBangumi) {
+            logger.log(`[${mod.name}] "onVideoOrBangumi" ${unsafeWindow.location.href}`);
+            mod.onVideoOrBangumi(hook);
           }
         } else if (pathname.startsWith('/bangumi/play/')) {
-          if (module.onVideo) {
-            logger.log(`[${module.name}] "onVideo" ${unsafeWindow.location.href}`);
-            module.onVideo(hook);
+          if (mod.onVideo) {
+            logger.log(`[${mod.name}] "onVideo" ${unsafeWindow.location.href}`);
+            mod.onVideo(hook);
           }
-          if (module.onBangumi) {
-            logger.log(`[${module.name}] "onBangumi" ${unsafeWindow.location.href}`);
-            module.onBangumi(hook);
+          if (mod.onBangumi) {
+            logger.log(`[${mod.name}] "onBangumi" ${unsafeWindow.location.href}`);
+            mod.onBangumi(hook);
           }
-          if (module.onVideoOrBangumi) {
-            logger.log(`[${module.name}] "onVideoOrBangumi" ${unsafeWindow.location.href}`);
-            module.onVideoOrBangumi(hook);
+          if (mod.onVideoOrBangumi) {
+            logger.log(`[${mod.name}] "onVideoOrBangumi" ${unsafeWindow.location.href}`);
+            mod.onVideoOrBangumi(hook);
           }
         }
         break;
       }
       case 'live.bilibili.com': {
-        if (module.onLive) {
-          logger.log(`[${module.name}] "onLive" ${unsafeWindow.location.href}`);
-          module.onLive(hook);
+        if (mod.onLive) {
+          logger.log(`[${mod.name}] "onLive" ${unsafeWindow.location.href}`);
+          mod.onLive(hook);
         }
         break;
       }
       case 't.bilibili.com': {
-        if (module.onStory) {
-          logger.log(`[${module.name}] "onStory" ${unsafeWindow.location.href}`);
-          module.onStory(hook);
+        if (mod.onStory) {
+          logger.log(`[${mod.name}] "onStory" ${unsafeWindow.location.href}`);
+          mod.onStory(hook);
         }
         break;
       }
@@ -136,17 +146,17 @@ import forceEnable4K from './modules/force-enable-4k';
 
   // Add Style
   onDOMContentLoaded(() => {
-    const head = document.head || document.getElementsByTagName('head')[0];
     const style = document.createElement('style');
     style.setAttribute('type', 'text/css');
     style.textContent = styles.join('\n');
-    head.appendChild(style);
+    document.head.appendChild(style);
   });
 
   // Override fetch
   (($fetch) => {
     unsafeWindow.fetch = async function (...$fetchArgs) {
       let abortFetch = false;
+      // eslint-disable-next-line no-useless-assignment -- the assignment can be skipped if doBeforeFetch throws an error
       let fetchArgs: typeof $fetchArgs | null | Response = $fetchArgs;
       let mockResponse: Response | null = null;
       for (const obBeforeFetch of onBeforeFetchHooks) {

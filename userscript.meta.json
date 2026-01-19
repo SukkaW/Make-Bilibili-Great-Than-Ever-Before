@@ -3,7 +3,13 @@
   "namespace": "https://skk.moe",
   "grant": [
     "unsafeWindow",
-    "GM.notification"
+    "GM.notification",
+    "GM.getValue",
+    "GM.setValue",
+    "GM.deleteValue",
+    "GM.listValues",
+    "GM.registerMenuCommand",
+    "GM.unregisterMenuCommand"
   ],
   "run-at": "document-start",
   "match": [
