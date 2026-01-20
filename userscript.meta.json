@@ -4,7 +4,7 @@
   "grant": [
     "unsafeWindow",
     "GM.notification",
-    "GM.getValue",
+    "GM_getValue",
     "GM.setValue",
     "GM.deleteValue",
     "GM.listValues",

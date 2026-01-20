@@ -2,11 +2,11 @@ import type { MakeBilibiliGreatThanEverBeforeModule } from '../types';
 
 const KEY_PREFIX = 'mbgtbemodule:';
 
-export async function initModuleMenu(mod: MakeBilibiliGreatThanEverBeforeModule) {
-  const enabled = await getEnabled(mod);
+export function initModuleMenu(mod: MakeBilibiliGreatThanEverBeforeModule) {
+  const enabled = getEnabled(mod);
 
   GM.registerMenuCommand(labelFor(enabled, mod), async () => {
-    const current = await getEnabled(mod);
+    const current = getEnabled(mod);
     await setEnabled(mod, !current);
     try {
       unsafeWindow.location.reload();
@@ -18,14 +18,12 @@ export async function initModuleMenu(mod: MakeBilibiliGreatThanEverBeforeModule)
   return enabled;
 }
 
-async function getEnabled(m: MakeBilibiliGreatThanEverBeforeModule) {
-  const key = KEY_PREFIX + m.name;
-  return GM.getValue<boolean>(key, true);
+function getEnabled(m: MakeBilibiliGreatThanEverBeforeModule) {
+  return GM_getValue<boolean>(KEY_PREFIX + m.name, true);
 }
 
 async function setEnabled(m: MakeBilibiliGreatThanEverBeforeModule, enabled: boolean) {
-  const key = KEY_PREFIX + m.name;
-  await GM.setValue(key, enabled);
+  return GM.setValue(KEY_PREFIX + m.name, enabled);
 }
 
 function labelFor(enabled: boolean, m: MakeBilibiliGreatThanEverBeforeModule) {

@@ -19,7 +19,7 @@ import defuseStorage from './modules/defuse-storage';
 import forceEnable4K from './modules/force-enable-4k';
 import { initModuleMenu } from './utils/module-menu';
 
-(async (unsafeWindow) => {
+((unsafeWindow) => {
   const modules: MakeBilibiliGreatThanEverBeforeModule[] = [
     defuseStorage,
     defuseSpyware,
@@ -79,11 +79,10 @@ import { initModuleMenu } from './utils/module-menu';
   const hostname = unsafeWindow.location.hostname;
   const pathname = unsafeWindow.location.pathname;
 
-  for (let i = 0; i < modules.length; i++) {
+  for (let i = 0, len = modules.length; i < len; i++) {
     const mod = modules[i];
 
-    // eslint-disable-next-line no-await-in-loop -- GM.getValue costs a little as shit
-    const enabled = await initModuleMenu(mod);
+    const enabled = initModuleMenu(mod);
     if (!enabled) {
       logger.log(`[${mod.name}] disabled -- skipping`);
       continue;
@@ -154,9 +153,9 @@ import { initModuleMenu } from './utils/module-menu';
       // eslint-disable-next-line no-useless-assignment -- the assignment can be skipped if doBeforeFetch throws an error
       let fetchArgs: typeof $fetchArgs | null | Response = $fetchArgs;
       let mockResponse: Response | null = null;
-      for (const obBeforeFetch of onBeforeFetchHooks) {
+      for (const onBeforeFetch of onBeforeFetchHooks) {
         try {
-          fetchArgs = obBeforeFetch($fetchArgs);
+          fetchArgs = onBeforeFetch($fetchArgs);
           if (fetchArgs === null) {
             abortFetch = true;
             break;
