@@ -7,20 +7,11 @@ import { createRetrieKeywordFilter } from 'foxts/retrie';
 import { createFakeNativeFunction } from '../utils/fake-native-function';
 import { noop } from 'foxts/noop';
 
-const DEFUSED_INDEXEDDB = new Set([
-  'PLAYER__LOG',
-  'MIRROR_TRACK_V2',
-  'pbp3',
-  'BILI_MIRROR_REPORT_POOL',
-  'BILI_MIRROR_RESOURCE_TIME',
-  'bp_nc_loader_config'
-]);
-
 const defusedPattern = createRetrieKeywordFilter([
-  'MIRROR_TRACK', '__LOG', 'BILI_MIRROR_REPORT_POOL', 'BILI_MIRROR_RESOURCE_TIME', 'reporter-pb',
-  'pbp3',
+  'pbp3', 'pbp_', 'pbpstate',
+  'BILI_MIRROR', 'MIRROR_TRACK', '__LOG', 'reporter-pb',
+  'KV_CONFIG_SDK',
   'pcdn', 'nc_loader',
-  'iconify',
   'bpcfgzip'
 ]);
 
@@ -28,23 +19,7 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
   name: 'disable-storage',
   description: '防止叔叔浪费你宝贵的 SSD 寿命',
   any() {
-    DEFUSED_INDEXEDDB.forEach((name) => {
-      const req = mockIndexedDB.deleteDatabase(name);
-      req.addEventListener('success', () => {
-        logger.info('IndexedDB deleted!', { name });
-      });
-      req.addEventListener('error', () => {
-        logger.info('IndexedDB delete failed!', { name });
-      });
-    });
-
-    for (let i = 0; i < unsafeWindow.localStorage.length; i++) {
-      const key = unsafeWindow.localStorage.key(i);
-      if (key && defusedPattern(key)) {
-        unsafeWindow.localStorage.removeItem(key);
-        logger.info('localStorage removed!', { key });
-      }
-    }
+    deleteIndexedDB();
 
     ((origOpen) => {
       unsafeWindow.indexedDB.open = createFakeNativeFunction(function (this: IDBFactory, name, version) {
@@ -60,6 +35,14 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
     })(unsafeWindow.indexedDB.open);
 
     ((orignalLocalStorage) => {
+      for (let i = 0; i < orignalLocalStorage.length; i++) {
+        const key = orignalLocalStorage.key(i);
+        if (key && defusedPattern(key)) {
+          orignalLocalStorage.removeItem(key);
+          logger.info('localStorage removed!', { key });
+        }
+      }
+
       const store = new Map<string, string>();
       const keys: string[] = Object.keys(orignalLocalStorage);
 
@@ -129,3 +112,17 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
 };
 
 export default defuseStorage;
+
+async function deleteIndexedDB() {
+  if (!('databases' in unsafeWindow.indexedDB)) {
+    return;
+  }
+  const dbs = await unsafeWindow.indexedDB.databases();
+  for (let i = 0, len = dbs.length; i < len; i++) {
+    const db = dbs[i];
+    if (db.name && defusedPattern(db.name)) {
+      logger.info('IndexedDB deleted!', { name: db.name });
+      unsafeWindow.indexedDB.deleteDatabase(db.name);
+    }
+  }
+}
