@@ -3,14 +3,21 @@ import { createRetrieKeywordFilter } from 'foxts/retrie';
 import { logger } from '../logger';
 import type { MakeBilibiliGreatThanEverBeforeModule } from '../types';
 import { defineReadonlyProperty } from '../utils/define-readonly-property';
+import { pickOne } from 'foxts/pick-random';
 
 const rBackupCdn = /(?:up|cn-)[\w-]+\.bilivideo\.com/g;
-const isP2PCDN = createRetrieKeywordFilter([
-  'upos-sz-302',
+const isP2PCDNDomainPatterm = createRetrieKeywordFilter([
   '.mcdn.bilivideo',
   '.szbdyd.com',
   '.nexusedgeio.com',
   '.ahdohpiechei.com' // 七牛云 PCDN
+]);
+function isP2PCDNDomain(domain: string) {
+  return isP2PCDNDomainPatterm(domain)
+    || (domain.includes('bilivideo') && domain.includes('302'));
+}
+const isP2PCDNUrl = createRetrieKeywordFilter([
+  'os=mcdn'
 ]);
 
 let prevLocationHref = '';
@@ -18,7 +25,7 @@ let prevCdnDomains: string[] = [];
 function getCDNDomain() {
   if (prevLocationHref !== unsafeWindow.location.href || prevCdnDomains.length === 0) {
     try {
-      const matched = Array.from(new Set(Array.from(document.head.innerHTML.matchAll(rBackupCdn), match => match[0]))).filter(domain => !isP2PCDN(domain));
+      const matched = Array.from(new Set(Array.from(document.head.innerHTML.matchAll(rBackupCdn), match => match[0]))).filter(domain => !isP2PCDNDomain(domain));
 
       if (matched.length > 0) {
         prevLocationHref = unsafeWindow.location.href;
@@ -41,7 +48,7 @@ function getCDNDomain() {
 
   return prevCdnDomains.length === 1
     ? prevCdnDomains[0]
-    : prevCdnDomains[Math.floor(Math.random() * prevCdnDomains.length)];
+    : pickOne(prevCdnDomains);
 }
 
 const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
@@ -102,7 +109,7 @@ const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
           const cdnDomains = new Set<string>();
 
           function addCDNFromUrl(url: unknown) {
-            if (typeof url === 'string' && !isP2PCDN(url)) {
+            if (typeof url === 'string' && !isP2PCDNDomain(url) && !isP2PCDNUrl(url)) {
               try {
                 cdnDomains.add(new URL(url).hostname);
               } catch {}
@@ -113,13 +120,15 @@ const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
               for (const videoOrAudio of data) {
                 if ('baseUrl' in videoOrAudio && typeof videoOrAudio.baseUrl === 'string') {
                   addCDNFromUrl(videoOrAudio.baseUrl);
-                } else if ('base_url' in videoOrAudio && typeof videoOrAudio.base_url === 'string') {
+                }
+                if ('base_url' in videoOrAudio && typeof videoOrAudio.base_url === 'string') {
                   addCDNFromUrl(videoOrAudio.base_url);
                 }
 
                 if ('backupUrl' in videoOrAudio && Array.isArray(videoOrAudio.backupUrl)) {
                   videoOrAudio.backupUrl.forEach(addCDNFromUrl);
-                } else if ('backup_url' in videoOrAudio && Array.isArray(videoOrAudio.backup_url)) {
+                }
+                if ('backup_url' in videoOrAudio && Array.isArray(videoOrAudio.backup_url)) {
                   videoOrAudio.backup_url.forEach(addCDNFromUrl);
                 }
               }
@@ -174,7 +183,7 @@ function replaceP2P(url: string | URL, cdnDomainGetter: () => string, meta = '')
   try {
     if (typeof url === 'string') {
       // early bailout for better performance
-      if (!isP2PCDN(url)) {
+      if (!isP2PCDNDomain(url) && !isP2PCDNUrl(url)) {
         return url;
       }
 
@@ -182,6 +191,9 @@ function replaceP2P(url: string | URL, cdnDomainGetter: () => string, meta = '')
         url = unsafeWindow.location.protocol + url;
       }
       url = new URL(url, unsafeWindow.location.href);
+    } else if (!isP2PCDNDomain(url.hostname) && !isP2PCDNUrl(url.href)) {
+      // early bailout for better performance
+      return url;
     }
     const hostname = url.hostname;
     if (hostname.endsWith('.szbdyd.com')) {
