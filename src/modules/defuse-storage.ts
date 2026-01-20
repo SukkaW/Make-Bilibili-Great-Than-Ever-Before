@@ -16,11 +16,12 @@ const DEFUSED_INDEXEDDB = new Set([
   'bp_nc_loader_config'
 ]);
 
-const defusedPatterm = createRetrieKeywordFilter([
+const defusedPattern = createRetrieKeywordFilter([
   'MIRROR_TRACK', '__LOG', 'BILI_MIRROR_REPORT_POOL', 'BILI_MIRROR_RESOURCE_TIME', 'reporter-pb',
   'pbp3',
   'pcdn', 'nc_loader',
-  'iconify'
+  'iconify',
+  'bpcfgzip'
 ]);
 
 const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
@@ -39,7 +40,7 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
 
     for (let i = 0; i < unsafeWindow.localStorage.length; i++) {
       const key = unsafeWindow.localStorage.key(i);
-      if (key && defusedPatterm(key)) {
+      if (key && defusedPattern(key)) {
         unsafeWindow.localStorage.removeItem(key);
         logger.info('localStorage removed!', { key });
       }
@@ -47,7 +48,7 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
 
     ((origOpen) => {
       unsafeWindow.indexedDB.open = createFakeNativeFunction(function (this: IDBFactory, name, version) {
-        if (defusedPatterm(name)) {
+        if (defusedPattern(name)) {
           logger.trace('IndexedDB mocked!', { name, version });
           return mockIndexedDB.open(name, version);
         }
@@ -66,8 +67,9 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
         setItem(key, value) {
           keys.push(key);
 
-          if (defusedPatterm(key)) {
+          if (defusedPattern(key)) {
             logger.trace('localStorage.setItem mocked:', { key, value });
+            orignalLocalStorage.removeItem(key);
             store.set(key, value);
           } else {
             // logger.trace('localStorage.setItem:', { key, value });
@@ -75,7 +77,7 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
           }
         },
         getItem(key) {
-          if (defusedPatterm(key)) {
+          if (defusedPattern(key)) {
             const value = store.has(key) ? store.get(key)! : null;
             logger.trace('localStorage.getItem mocked:', { key, value });
             return value;
@@ -90,7 +92,7 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
             keys.splice(keys.indexOf(key), 1);
           }
 
-          if (defusedPatterm(key)) {
+          if (defusedPattern(key)) {
             logger.trace('localStorage.removeItem mocked:', { key });
             store.delete(key);
           } else {
