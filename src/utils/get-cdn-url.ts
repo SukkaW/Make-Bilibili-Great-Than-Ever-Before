@@ -1,3 +1,15 @@
+/**
+ * IMPORTANT NOTICE for those who want to implement similar functionality:
+ *
+ * "Make Bilibili Great Than Ever Before" does not have control of the Bilibili web player, we can
+ * only hijack the HTTP request fired by the Bilibili web player and replace the URL on the fly,
+ * thus we must implement such complex logic.
+ *
+ * If you are implementing a third-party Bilibili player or Bilibili video downloader, you already
+ * have all the control. You can just choose one best URL from the full CDN information and then
+ * move on.
+ */
+
 import { pickOne } from 'foxts/pick-random';
 import { createRetrieKeywordFilter } from 'foxts/retrie';
 import { logger } from '../logger';
@@ -39,7 +51,7 @@ function createCDNUtil() {
     mirror_urls?: Set<string>,
     bcache_urls?: Set<string>,
     mcdn_upgcxcode_urls?: Set<string>,
-    xyusourceUrls?: Set<string>,
+    szbdyd_urls?: Set<string>,
     mcdn_tf_urls?: Set<string>
   }
 
@@ -125,7 +137,7 @@ function createCDNUtil() {
 
       const mcdn_tf_urls = new Set<string>();
       const mcdn_upgcxcode_urls = new Set<string>();
-      const xyusourceUrls = new Set<string>();
+      const szbdyd_urls = new Set<string>();
 
       for (const urlStr of knownUrls) {
         try {
@@ -212,7 +224,7 @@ function createCDNUtil() {
             url.hostname = url.searchParams.get('xy_usource') ?? MCDN_UPGCXCODE_URL_HOSTNAME_TO_BE_REPLACED;
             url.port = '443';
 
-            xyusourceUrls.add(url.href);
+            szbdyd_urls.add(url.href);
             continue;
           }
 
@@ -239,7 +251,7 @@ function createCDNUtil() {
           getReplacementUrl = () => pickOne(mirrorUrlsArray);
           break;
         }
-        // bacache urls are not as good as mirror urls, but still better than p2p cdn,
+        // bcache urls are not as good as mirror urls, but still better than p2p cdn,
         // we pick one from them when no mirror urls are available
         case (bcache_urls.size > 0): {
           replacementType = 'bcache';
@@ -267,10 +279,10 @@ function createCDNUtil() {
           break;
         }
         // Next we try szbdyd.com urls with either xy_usource or upgcxcode host replacement
-        case (xyusourceUrls.size > 0): {
+        case (szbdyd_urls.size > 0): {
           replacementType = 'szbdyd.com -> xy_usource or upgcxcode host replacement';
 
-          const xyusourceUrlsArray = Array.from(xyusourceUrls);
+          const xyusourceUrlsArray = Array.from(szbdyd_urls);
 
           getReplacementUrl = () => {
             const picked = pickOne(xyusourceUrlsArray);
@@ -316,7 +328,7 @@ function createCDNUtil() {
           mirror_urls,
           bcache_urls,
           mcdn_upgcxcode_urls,
-          xyusourceUrls,
+          szbdyd_urls,
           mcdn_tf_urls
         });
       });
