@@ -50,7 +50,7 @@ const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
           getCDNUtil().saveAndParsePlayerInfo(JSON.parse(response), 'playurl XHR API', true);
         } catch (e) {
           logger.error('Failed to parse playinfo XHR API JSON', e, { response });
-        };
+        }
       }
 
       return response;

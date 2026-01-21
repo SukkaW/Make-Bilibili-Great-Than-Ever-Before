@@ -37,7 +37,7 @@ function createCDNUtil() {
     getReplacementUrl(incomingUrl: string | URL): string,
     // Optional meta
     mirror_urls?: Set<string>,
-    bacache_urls?: Set<string>,
+    bcache_urls?: Set<string>,
     mcdn_upgcxcode_urls?: Set<string>,
     xyusourceUrls?: Set<string>,
     mcdn_tf_urls?: Set<string>
@@ -133,7 +133,7 @@ function createCDNUtil() {
             if (mirrorRegex.test(urlStr)) {
               const url = new URL(urlStr);
 
-              // Now we konw this url is both upgcxcode type url and mirror type url
+              // Now we know this url is both upgcxcode type url and mirror type url
               // Since all upgcxcode urls are interchangeable, we can collect its host
               if (
               // It is possible for a mirror type url to also be a p2p cdn:
@@ -276,7 +276,7 @@ function createCDNUtil() {
             const picked = pickOne(xyusourceUrlsArray);
             const url = new URL(picked);
 
-            // If the URL do not have xy_usource, we need to replace with upgcxcode host
+            // If the URL does not have xy_usource, we need to replace with upgcxcode host
             if (url.hostname === MCDN_UPGCXCODE_URL_HOSTNAME_TO_BE_REPLACED) {
               // need to replace with upgcxcode host
               return replaceUpgcxcodeHost(url);
@@ -314,7 +314,7 @@ function createCDNUtil() {
           getReplacementUrl,
           // Optional meta
           mirror_urls,
-          bacache_urls: bcache_urls,
+          bcache_urls,
           mcdn_upgcxcode_urls,
           xyusourceUrls,
           mcdn_tf_urls
@@ -351,7 +351,7 @@ function createCDNUtil() {
     if (urlStr.includes('/upgcxcode/')) {
       // Even if we have not collected any CDN info yet, we can still try our best to avoid P2P CDNs
       if (mirrorRegex.test(urlStr)) {
-        // Now we konw this url is both upgcxcode type url and mirror type url
+        // Now we know this url is both upgcxcode type url and mirror type url
         // Since all upgcxcode urls are interchangeable, we can collect its host
         if (
           // It is possible for a mirror type url to also be a p2p cdn:
