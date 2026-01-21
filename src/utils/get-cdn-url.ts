@@ -84,11 +84,12 @@ function createCDNUtil() {
         return basicP2PReplacement(urlObj, meta);
       }
 
-      if (cdnDatas.has(url.toString())) {
-        return cdnDatas.get(url.toString())!.getReplacementUrl(url);
+      const urlStr = url.toString();
+      if (cdnDatas.has(urlStr)) {
+        return cdnDatas.get(urlStr)!.getReplacementUrl(url);
       }
 
-      logger.error('No matching CDN URL Group found!', { meta, url });
+      logger.error('No matching CDN URL Group found!', { meta, url: urlStr });
       return basicP2PReplacement(typeof url === 'string' ? new URL(url) : url, meta);
     }
   };
@@ -119,7 +120,6 @@ function createCDNUtil() {
       }
 
       // After collecting all known URLs, we can now process them
-      let last = '';
       const mirror_urls = new Set<string>();
       const bcache_urls = new Set<string>();
 
@@ -128,20 +128,18 @@ function createCDNUtil() {
       const xyusourceUrls = new Set<string>();
 
       for (const urlStr of knownUrls) {
-        last = urlStr;
-
         try {
-          if (mirrorRegex.test(urlStr)) {
-            if (urlStr.includes('/upgcxcode/')) {
+          if (urlStr.includes('/upgcxcode/')) {
+            if (mirrorRegex.test(urlStr)) {
               const url = new URL(urlStr);
 
               // Now we konw this url is both upgcxcode type url and mirror type url
               // Since all upgcxcode urls are interchangeable, we can collect its host
               if (
-                // It is possible for a mirror type url to also be a p2p cdn:
-                //
-                // upos-sz-mirrorcoso1.bilivideo.com os=mcdn
-                // upos-\w*-302.* (HTTP 302 p2p cdn)
+              // It is possible for a mirror type url to also be a p2p cdn:
+              //
+              // upos-sz-mirrorcoso1.bilivideo.com os=mcdn
+              // upos-*-302.bilivideo.com (HTTP 302 p2p cdn)
                 url.searchParams.get('os') !== 'mcdn'
                 && !isP2PCDNDomain(url.hostname)
               ) {
@@ -154,7 +152,7 @@ function createCDNUtil() {
 
                 mirror_urls.add(url.href);
               } else {
-                // Now we know this url is mirror type url, upgcxcode url, and p2p cdn url
+              // Now we know this url is mirror type url, upgcxcode url, and p2p cdn url
                 url.protocol = 'https:';
                 url.port = '443';
 
@@ -163,20 +161,11 @@ function createCDNUtil() {
                 // reduce duplicates in the Set<string>.
                 url.hostname = MCDN_UPGCXCODE_URL_HOSTNAME_TO_BE_REPLACED;
 
-                mcdn_upgcxcode_urls.add(urlStr);
+                mcdn_upgcxcode_urls.add(url.href);
               }
+              continue;
             }
 
-            continue;
-          }
-
-          if (mCdnTfRegex.test(urlStr)) {
-            // This is mcdn type url, a.k.a. pure IP cdn url or mcdn.bilivideo.*
-            mcdn_tf_urls.add(urlStr);
-            continue;
-          }
-
-          if (urlStr.includes('/upgcxcode/')) {
             const url = new URL(urlStr);
 
             // Now we know this is upgcxcode type url, but not mirror type url:
@@ -192,7 +181,7 @@ function createCDNUtil() {
               // reduce duplicates in the Set<string>.
               url.hostname = MCDN_UPGCXCODE_URL_HOSTNAME_TO_BE_REPLACED;
 
-              mcdn_upgcxcode_urls.add(urlStr);
+              mcdn_upgcxcode_urls.add(url.href);
             } else {
               // bcache type url (self hosted PoP):
               // cn-sccd-cu-01-01.bilivideo.com
@@ -203,6 +192,12 @@ function createCDNUtil() {
 
               bcache_urls.add(urlStr);
             }
+            continue;
+          }
+
+          if (mCdnTfRegex.test(urlStr)) {
+            // This is mcdn type url, a.k.a. pure IP cdn url or mcdn.bilivideo.*
+            mcdn_tf_urls.add(urlStr);
             continue;
           }
 
@@ -307,7 +302,7 @@ function createCDNUtil() {
         default: {
           replacementType = 'none';
 
-          logger.warn('Failed to get replacement CDN URL', { last });
+          logger.warn('Failed to get replacement CDN URL');
           getReplacementUrl = (url: string | URL) => url.toString();
           break;
         }
@@ -349,9 +344,9 @@ function createCDNUtil() {
   }
 
   function basicP2PReplacement(url: URL, meta: string): string {
-    logger.warn('PlayInfo not collected yet! Opt-in basic P2P replacement', { meta, url: url.href });
-
     const urlStr = url.href;
+
+    logger.warn('PlayInfo not collected yet! Opt-in basic P2P replacement', { meta, url: urlStr });
 
     if (urlStr.includes('/upgcxcode/')) {
       // Even if we have not collected any CDN info yet, we can still try our best to avoid P2P CDNs
