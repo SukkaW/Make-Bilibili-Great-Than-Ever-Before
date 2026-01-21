@@ -218,7 +218,7 @@ function createCDNUtil() {
 
           logger.error(`Unrecognized CDN URL pattern: ${urlStr}`);
         } catch {
-          // fallthru
+          logger.debug('Failed to process CDN URL, skipping.', { url: urlStr });
         }
       }
 
