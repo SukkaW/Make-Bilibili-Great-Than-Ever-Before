@@ -16,7 +16,11 @@ export const logger = {
   error: consoleError.bind(console, '[make-bilibili-great-than-ever-before]'),
   warn: consoleWarn.bind(console, '[make-bilibili-great-than-ever-before]'),
   info: consoleInfo.bind(console, '[make-bilibili-great-than-ever-before]'),
-  debug: consoleDebug.bind(console, '[make-bilibili-great-than-ever-before]'),
+  debug(...args: any[]) {
+    if (process.env.NODE_ENV === 'development') {
+      consoleDebug.bind(console, '[make-bilibili-great-than-ever-before]')(...args);
+    }
+  },
   trace(...args: any[]) {
     consoleGroupCollapsed.bind(console, '[make-bilibili-great-than-ever-before]')(...args);
     consoleTrace(...args);

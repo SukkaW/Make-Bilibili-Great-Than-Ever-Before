@@ -51,18 +51,28 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
           keys.push(key);
 
           if (defusedPattern(key)) {
-            logger.trace('localStorage.setItem mocked:', { key, value });
+            if (process.env.DEBUG) {
+              logger.trace('localStorage.setItem mocked:', { key, value });
+            } else {
+              logger.info('localStorage.setItem mocked:', { key, value });
+            }
+
             orignalLocalStorage.removeItem(key);
             store.set(key, value);
           } else {
-            // logger.trace('localStorage.setItem:', { key, value });
             orignalLocalStorage.setItem(key, value);
           }
         },
         getItem(key) {
           if (defusedPattern(key)) {
             const value = store.has(key) ? store.get(key)! : null;
-            logger.trace('localStorage.getItem mocked:', { key, value });
+
+            if (process.env.DEBUG) {
+              logger.trace('localStorage.getItem mocked:', { key, value });
+            } else {
+              logger.info('localStorage.getItem mocked:', { key, value });
+            }
+
             return value;
           }
 
@@ -76,7 +86,12 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
           }
 
           if (defusedPattern(key)) {
-            logger.trace('localStorage.removeItem mocked:', { key });
+            if (process.env.DEBUG) {
+              logger.trace('localStorage.removeItem mocked:', { key });
+            } else {
+              logger.info('localStorage.removeItem mocked:', { key });
+            }
+
             store.delete(key);
           } else {
             // logger.trace('localStorage.removeItem:', { key });
@@ -84,7 +99,12 @@ const defuseStorage: MakeBilibiliGreatThanEverBeforeModule = {
           }
         },
         clear() {
-          logger.trace('localStorage.clear mocked');
+          if (process.env.DEBUG) {
+            logger.trace('localStorage.clear mocked');
+          } else {
+            logger.info('localStorage.clear mocked');
+          }
+
           store.clear();
           orignalLocalStorage.clear();
 

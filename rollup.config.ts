@@ -1,4 +1,5 @@
 import { defineConfig } from 'rollup';
+import type { RollupOptions } from 'rollup';
 
 import { swc, defineRollupSwcOption } from 'rollup-plugin-swc3';
 import commonjs from '@rollup/plugin-commonjs';
@@ -18,53 +19,72 @@ const userScriptMetaBlockConfig = {
   }
 };
 
-export default defineConfig([
-  {
-    input: 'src/index.ts',
-    output: [{
-      format: 'iife',
-      file: 'dist/make-bilibili-great-than-ever-before.user.js',
-      sourcemap: false,
-      esModule: false,
-      compact: true,
-      generatedCode: 'es2015'
-    }],
-    plugins: [
-      swc(defineRollupSwcOption({
-        jsc: {
-          target: 'es2022',
-          externalHelpers: true
-        }
-      })),
-      commonjs({
-        sourceMap: false,
-        esmExternals: true
-      }),
-      nodeResolve({
-        exportConditions: ['import', 'require', 'default']
-      }),
-      replace({
-        preventAssignment: true,
-        values: {
-          'process.env.NODE_ENV': JSON.stringify('production'),
-          'typeof window': JSON.stringify('object'),
-          globalThis: 'unsafeWindow'
-        }
-      }),
-      metablock(userScriptMetaBlockConfig)
+export default defineConfig(
+  ([
+    [
+      'make-bilibili-great-than-ever-before',
+      false
     ],
-    watch: process.env.WATCH
-      ? {}
-      : false,
-    external: ['typed-query-selector']
-  },
-  {
-    input: 'src/dummy.js',
-    output: [{
-      file: 'dist/make-bilibili-great-than-ever-before.meta.js'
-    }],
-    plugins: [
-      metablock(userScriptMetaBlockConfig)
+    [
+      'make-bilibili-greater-than-ever-before.debug',
+      true
     ]
-  }
-]);
+  ] as const).flatMap<RollupOptions>(
+    ([filename, debug]) => [
+      {
+        input: 'src/index.ts',
+        output: [{
+          format: 'iife',
+          file: `dist/${filename}.user.js`,
+          sourcemap: false,
+          esModule: false,
+          compact: true,
+          generatedCode: 'es2015'
+        }],
+        plugins: [
+          commonjs({
+            sourceMap: false,
+            esmExternals: true
+          }),
+          nodeResolve({
+            exportConditions: ['import', 'require', 'default']
+          }),
+          replace({
+            preventAssignment: true,
+            values: {
+              'process.env.NODE_ENV': JSON.stringify('production'),
+              'process.env.DEBUG': String(debug),
+              'typeof window': JSON.stringify('object'),
+              globalThis: 'unsafeWindow'
+            }
+          }),
+          swc(defineRollupSwcOption({
+            jsc: {
+              target: 'es2022',
+              externalHelpers: true,
+              transform: {
+                optimizer: {
+                  simplify: true
+                }
+              }
+            }
+          })),
+          metablock(userScriptMetaBlockConfig)
+        ],
+        watch: process.env.WATCH
+          ? {}
+          : false,
+        external: ['typed-query-selector']
+      },
+      {
+        input: 'src/dummy.js',
+        output: [{
+          file: `dist/${filename}.meta.js`
+        }],
+        plugins: [
+          metablock(userScriptMetaBlockConfig)
+        ]
+      }
+    ]
+  )
+);
