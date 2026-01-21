@@ -33,7 +33,6 @@ function isP2PCDNDomain(hostname: string): boolean {
 
 function createCDNUtil() {
   interface CdnUrlData {
-    knownUrls: Set<string>,
     replacementType: string,
     getReplacementUrl(incomingUrl: string | URL): string,
     // Optional meta
@@ -48,18 +47,18 @@ function createCDNUtil() {
   const mirror_type_upgcxcode_hosts = new Set<string>();
   const bcache_type_upgcxcode_hosts = new Set<string>();
 
-  const cdnDatas: CdnUrlData[] = [];
+  const cdnDatas = new Map<string, CdnUrlData>();
 
   return {
     saveAndParsePlayerInfo(json: object, meta: string, shouldOverwrite = false) {
-      if (cdnDatas.length > 0) {
+      if (cdnDatas.size > 0) {
         if (!shouldOverwrite) {
           logger.debug('CDN URLs already extracted, skip parsing again.', { meta });
           return;
         }
 
         logger.debug('Overwritten existing CDN URLs, re-parse playinfo.', { meta });
-        cdnDatas.length = 0;
+        cdnDatas.clear();
       }
 
       if (
@@ -80,26 +79,17 @@ function createCDNUtil() {
       logger.info('CDN URLs extracted', { meta, cdnDatas });
     },
     getReplacementCdnUrl(url: string | URL, meta: string): string {
-      if (cdnDatas.length === 0) {
+      if (cdnDatas.size === 0) {
         const urlObj = typeof url === 'string' ? new URL(url) : url;
-        if (!isP2PCDNDomain(urlObj.hostname)) {
-          return urlObj.href;
-        }
-
         return basicP2PReplacement(urlObj, meta);
       }
 
-      for (let i = 0, len = cdnDatas.length; i < len; i++) {
-        const cdnData = cdnDatas[i];
-        if (!cdnData.knownUrls.has(url.toString())) {
-          continue;
-        }
-
-        return cdnData.getReplacementUrl(url);
+      if (cdnDatas.has(url.toString())) {
+        return cdnDatas.get(url.toString())!.getReplacementUrl(url);
       }
 
       logger.error('No matching CDN URL Group found!', { meta, url });
-      return url.toString();
+      return basicP2PReplacement(typeof url === 'string' ? new URL(url) : url, meta);
     }
   };
 
@@ -323,16 +313,17 @@ function createCDNUtil() {
         }
       }
 
-      cdnDatas.push({
-        knownUrls,
-        replacementType,
-        getReplacementUrl,
-        // Optional meta
-        mirror_urls,
-        bacache_urls: bcache_urls,
-        mcdn_upgcxcode_urls,
-        xyusourceUrls,
-        mcdn_tf_urls
+      knownUrls.forEach((url) => {
+        cdnDatas.set(url, {
+          replacementType,
+          getReplacementUrl,
+          // Optional meta
+          mirror_urls,
+          bacache_urls: bcache_urls,
+          mcdn_upgcxcode_urls,
+          xyusourceUrls,
+          mcdn_tf_urls
+        });
       });
     }
   }
