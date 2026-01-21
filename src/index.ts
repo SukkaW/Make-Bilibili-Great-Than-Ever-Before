@@ -170,7 +170,7 @@ import { initModuleMenu } from './utils/module-menu';
       }
 
       if (abortFetch) {
-        logger.log('Fetch aborted', { fetchArgs: $fetchArgs, mockResponse });
+        logger.debug('Fetch aborted', { fetchArgs: $fetchArgs, mockResponse });
 
         return mockResponse ?? new Response();
       }
@@ -208,7 +208,7 @@ import { initModuleMenu } from './utils/module-menu';
       }
 
       if (xhrArgs === null) {
-        logger.log('XHR aborted', { $args });
+        logger.debug('XHR aborted', { $args });
         this.send = noop;
         this.setRequestHeader = noop;
         return;
