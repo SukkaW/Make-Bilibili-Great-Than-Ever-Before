@@ -1,6 +1,7 @@
 import { pickOne } from 'foxts/pick-random';
 import { createRetrieKeywordFilter } from 'foxts/retrie';
 import { logger } from '../logger';
+import { lazyValue } from 'foxts/lazy-value';
 
 const PROXY_TF = 'proxy-tf-all-ws.bilivideo.com';
 const FALLBACK_CDN_HOST = 'upos-sz-mirrorali.bilivideo.com';
@@ -14,7 +15,7 @@ const knownP2pCdnDomainPattern = createRetrieKeywordFilter([
   '302ppio',
   '302kodo',
   '.mcdn.bilivideo',
-  '.szbdyd.com',
+  'szbdyd.com',
   '.nexusedgeio.com',
   '.ahdohpiechei.com' // 七牛云 PCDN
 ]);
@@ -361,39 +362,40 @@ function createCDNUtil() {
 
     const urlStr = url.href;
 
-    // Even if we have not collected any CDN info yet, we can still try our best to avoid P2P CDNs
-    if (mirrorRegex.test(urlStr) && urlStr.includes('/upgcxcode/')) {
-      // Now we konw this url is both upgcxcode type url and mirror type url
-      // Since all upgcxcode urls are interchangeable, we can collect its host
-      if (
-        // It is possible for a mirror type url to also be a p2p cdn:
-        //
-        // upos-sz-mirrorcoso1.bilivideo.com os=mcdn
-        // upos-\w*-302.* (HTTP 302 p2p cdn)
-        url.searchParams.get('os') !== 'mcdn'
-        && !isP2PCDNDomain(url.hostname)
-      ) {
-        mirror_type_upgcxcode_hosts.add(url.hostname);
+    if (urlStr.includes('/upgcxcode/')) {
+      // Even if we have not collected any CDN info yet, we can still try our best to avoid P2P CDNs
+      if (mirrorRegex.test(urlStr)) {
+        // Now we konw this url is both upgcxcode type url and mirror type url
+        // Since all upgcxcode urls are interchangeable, we can collect its host
+        if (
+          // It is possible for a mirror type url to also be a p2p cdn:
+          //
+          // upos-sz-mirrorcoso1.bilivideo.com os=mcdn
+          // upos-\w*-302.* (HTTP 302 p2p cdn)
+          url.searchParams.get('os') !== 'mcdn'
+          && !isP2PCDNDomain(url.hostname)
+        ) {
+          mirror_type_upgcxcode_hosts.add(url.hostname);
 
-        // Now we know this url is mirror type url and not p2p cdn
-        // let's ensure it is HTTPS and add to mirror urls
-        url.protocol = 'https:';
-        url.port = '443';
+          // Now we know this url is mirror type url and not p2p cdn
+          // let's ensure it is HTTPS and add to mirror urls
+          url.protocol = 'https:';
+          url.port = '443';
 
-        return url.href;
+          return url.href;
+        }
+
+        // Now we know this url is os=mcdn/http 302 url, let's replace its host
+        return replaceUpgcxcodeHost(url);
       }
 
-      // Now we know this url is os=mcdn/http 302 url, let's replace its host
-      return replaceUpgcxcodeHost(url);
-    }
-
-    if (urlStr.includes('/upgcxcode/')) {
       // Now we know this is upgcxcode type url, but not mirror type url:
       if (isP2PCDNDomain(url.hostname)) {
         // *.mcdn.bilivideo.* (mcdn type url p2p cdn)
         // upos-\w*-302.* (HTTP 302 p2p cdn)
         return replaceUpgcxcodeHost(url);
       }
+
       // bcache type url (self hosted PoP):
       // cn-sccd-cu-01-01.bilivideo.com
       // (more details in https://rec.danmuji.org/dev/cdn-info/ )
@@ -431,10 +433,4 @@ function createCDNUtil() {
 }
 
 type CDNUtilInstance = ReturnType<typeof createCDNUtil>;
-
-let lastInstance: CDNUtilInstance | null = null;
-
-export function getCDNUtil(): CDNUtilInstance {
-  lastInstance ??= createCDNUtil();
-  return lastInstance;
-}
+export const getCDNUtil = lazyValue<CDNUtilInstance>(createCDNUtil);
