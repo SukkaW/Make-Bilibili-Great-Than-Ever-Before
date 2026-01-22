@@ -103,7 +103,7 @@ const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
           HTMLMediaElementPrototypeSrcDescriptor?.set?.call(this, value);
         }
       });
-    }(Object.getOwnPropertyDescriptor(unsafeWindow.HTMLMediaElement.prototype, 'src')));
+    })(Object.getOwnPropertyDescriptor(unsafeWindow.HTMLMediaElement.prototype, 'src'));
 
     onXhrOpen((xhrOpenArgs) => {
       const xhrUrl = xhrOpenArgs[1];
