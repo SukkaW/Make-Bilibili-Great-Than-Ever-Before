@@ -26,18 +26,18 @@
     "foxts": "^5.0.4"
   },
   "devDependencies": {
-    "@eslint-sukka/node": "^8.2.0",
+    "@eslint-sukka/node": "^8.3.0",
     "@rollup/plugin-commonjs": "^28.0.9",
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-replace": "^6.0.3",
-    "@swc/core": "^1.15.8",
+    "@swc/core": "^1.15.10",
     "@swc/helpers": "^0.5.18",
     "@types/node": "^22.19.7",
     "bumpp": "^10.4.0",
     "eslint": "^9.39.2",
-    "eslint-config-sukka": "^8.2.0",
-    "eslint-formatter-sukka": "^8.2.0",
-    "rollup": "^4.55.2",
+    "eslint-config-sukka": "^8.3.0",
+    "eslint-formatter-sukka": "^8.3.0",
+    "rollup": "^4.56.0",
     "rollup-plugin-swc3": "^0.12.1",
     "rollup-plugin-userscript-metablock": "^0.4.3",
     "typescript": "^5.9.3"
@@ -47,6 +47,9 @@
     "onlyBuiltDependencies": [
       "@swc/core",
       "unrs-resolver"
-    ]
+    ],
+    "overrides": {
+      "eslint>chalk": "npm:ansis@^3.17.0"
+    }
   }
 }
