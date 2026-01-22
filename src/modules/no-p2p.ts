@@ -14,7 +14,23 @@ const knownNonVideoPattern = createRetrieKeywordFilter([
 ]);
 function isKnownNonVideoUrl(url: string | URL): boolean {
   const urlStr = url.toString();
-  return knownNonVideoPattern(urlStr);
+  if (knownNonVideoPattern(urlStr)) {
+    return true;
+  }
+  if (typeof url === 'string') {
+    return url.startsWith('data:') || url.startsWith('blob:');
+  }
+  return url.protocol === 'data:' || url.protocol === 'blob:';
+}
+
+declare global {
+  interface Window {
+    __playinfo__?: unknown
+  }
+}
+
+function isObject(value: unknown): value is object {
+  return typeof value === 'object' && value !== null;
 }
 
 const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
@@ -33,13 +49,21 @@ const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
     defineReadonlyProperty(unsafeWindow, 'BPP2PSDK', MockBPP2PSDK);
     defineReadonlyProperty(unsafeWindow, 'SeederSDK', MockSeederSDK);
 
-    if ('__playinfo__' in unsafeWindow && typeof unsafeWindow.__playinfo__ === 'object' && unsafeWindow.__playinfo__) {
-      getCDNUtil().saveAndParsePlayerInfo(unsafeWindow.__playinfo__, 'unsafeWindow.__playinfo__', false);
+    if (isObject(unsafeWindow.__playinfo__)) {
+      getCDNUtil().saveAndParsePlayerInfo(unsafeWindow.__playinfo__, 'unsafeWindow.__playinfo__');
     } else {
-      logger.debug('No unsafeWindow.__playinfo__ found on script load, wait for DOMContentLoaded and check again.');
-      onDOMContentLoaded(() => {
-        if ('__playinfo__' in unsafeWindow && typeof unsafeWindow.__playinfo__ === 'object' && unsafeWindow.__playinfo__) {
-          getCDNUtil().saveAndParsePlayerInfo(unsafeWindow.__playinfo__, 'unsafeWindow.__playinfo__ (DOMContentLoaded)', false);
+      logger.warn('No unsafeWindow.__playinfo__ found, waiting for a microtask and check again.', { json: unsafeWindow.__playinfo__ });
+
+      Promise.resolve().finally(() => {
+        if (isObject(unsafeWindow.__playinfo__)) {
+          getCDNUtil().saveAndParsePlayerInfo(unsafeWindow.__playinfo__, 'unsafeWindow.__playinfo__ (microtask)');
+        } else {
+          logger.warn('No unsafeWindow.__playinfo__ found in microtask either, waiting for DOMContentLoaded and check again.', { json: unsafeWindow.__playinfo__ });
+          onDOMContentLoaded(() => {
+            if (isObject(unsafeWindow.__playinfo__)) {
+              getCDNUtil().saveAndParsePlayerInfo(unsafeWindow.__playinfo__, 'unsafeWindow.__playinfo__ (DOMContentLoaded)');
+            }
+          });
         }
       });
     }
@@ -47,7 +71,7 @@ const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
     onXhrResponse((_method, url, response, _xhr) => {
       if (url.toString().includes('api.bilibili.com/x/player/wbi/playurl') && typeof response === 'string') {
         try {
-          getCDNUtil().saveAndParsePlayerInfo(JSON.parse(response), 'playurl XHR API', true);
+          getCDNUtil().saveAndParsePlayerInfo(JSON.parse(response), 'playurl XHR API');
         } catch (e) {
           logger.error('Failed to parse playinfo XHR API JSON', e, { response });
         }
@@ -65,7 +89,7 @@ const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
             value = String(value);
           }
 
-          if (!value.startsWith('blob:')) {
+          if (!value.startsWith('blob:') && !value.startsWith('data:')) {
             // we don't care about blob urls
             // they will use another way to fetch the real url and turn it into blob url anyway
             // we can intercept that fetch/XHR instead

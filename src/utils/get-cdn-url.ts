@@ -14,6 +14,7 @@ import { pickOne } from 'foxts/pick-random';
 import { createRetrieKeywordFilter } from 'foxts/retrie';
 import { logger } from '../logger';
 import { lazyValue } from 'foxts/lazy-value';
+import flru from 'flru';
 
 const PROXY_TF = 'proxy-tf-all-ws.bilivideo.com';
 const FALLBACK_CDN_HOST = 'upos-sz-mirrorali.bilivideo.com';
@@ -59,20 +60,10 @@ function createCDNUtil() {
   const mirror_type_upgcxcode_hosts = new Set<string>();
   const bcache_type_upgcxcode_hosts = new Set<string>();
 
-  const cdnDatas = new Map<string, CdnUrlData>();
+  const cdnDatas = flru<CdnUrlData>(200);
 
   return {
-    saveAndParsePlayerInfo(json: object, meta: string, shouldOverwrite = false) {
-      if (cdnDatas.size > 0) {
-        if (!shouldOverwrite) {
-          logger.debug('CDN URLs already extracted, skip parsing again.', { meta });
-          return;
-        }
-
-        logger.debug('Overwritten existing CDN URLs, re-parse playinfo.', { meta });
-        cdnDatas.clear();
-      }
-
+    saveAndParsePlayerInfo(json: object, meta: string) {
       if (
         (!('data' in json)) || typeof json.data !== 'object' || json.data === null
         || (!('dash' in json.data)) || typeof json.data.dash !== 'object' || json.data.dash === null
@@ -88,20 +79,20 @@ function createCDNUtil() {
         extractCDNFromVideoOrAudio(json.data.dash.audio);
       }
 
-      logger.info('CDN URLs extracted', { meta, cdnDatas });
+      logger.info('CDN URLs extracted', { meta });
+
+      return cdnDatas;
     },
     getReplacementCdnUrl(url: string | URL, meta: string): string {
-      if (cdnDatas.size === 0) {
-        const urlObj = typeof url === 'string' ? new URL(url) : url;
-        return basicP2PReplacement(urlObj, meta);
+      const urlObj = typeof url === 'string' ? new URL(url) : url;
+      const key = urlObj.pathname + urlObj.search;
+
+      const data = cdnDatas.get(key);
+      if (data !== undefined) {
+        return data.getReplacementUrl(url);
       }
 
-      const urlStr = url.toString();
-      if (cdnDatas.has(urlStr)) {
-        return cdnDatas.get(urlStr)!.getReplacementUrl(url);
-      }
-
-      logger.error('No matching CDN URL Group found!', { meta, url: urlStr });
+      logger.warn('No matching CDN URL Group found! Opt-in basic P2P replacement', { meta, url: urlObj.href, key });
       return basicP2PReplacement(typeof url === 'string' ? new URL(url) : url, meta);
     }
   };
@@ -148,10 +139,10 @@ function createCDNUtil() {
               // Now we know this url is both upgcxcode type url and mirror type url
               // Since all upgcxcode urls are interchangeable, we can collect its host
               if (
-              // It is possible for a mirror type url to also be a p2p cdn:
-              //
-              // upos-sz-mirrorcoso1.bilivideo.com os=mcdn
-              // upos-*-302.bilivideo.com (HTTP 302 p2p cdn)
+                // It is possible for a mirror type url to also be a p2p cdn:
+                //
+                // upos-sz-mirrorcoso1.bilivideo.com os=mcdn
+                // upos-*-302.bilivideo.com (HTTP 302 p2p cdn)
                 url.searchParams.get('os') !== 'mcdn'
                 && !isP2PCDNDomain(url.hostname)
               ) {
@@ -164,7 +155,7 @@ function createCDNUtil() {
 
                 mirror_urls.add(url.href);
               } else {
-              // Now we know this url is mirror type url, upgcxcode url, and p2p cdn url
+                // Now we know this url is mirror type url, upgcxcode url, and p2p cdn url
                 url.protocol = 'https:';
                 url.port = '443';
 
@@ -241,6 +232,8 @@ function createCDNUtil() {
         // We always prefer mirror type urls when possible, so as long as we have some,
         // we always pick one from them
         case (mirror_urls.size > 0): {
+          logger.info('Found ' + mirror_urls.size + ' mirror type CDN URLs, future replacement will be chosen from these URLs.', { mirror_urls });
+
           replacementType = 'mirror';
 
           const mirrorUrlsArray = Array.from(mirror_urls);
@@ -254,6 +247,8 @@ function createCDNUtil() {
         // bcache urls are not as good as mirror urls, but still better than p2p cdn,
         // we pick one from them when no mirror urls are available
         case (bcache_urls.size > 0): {
+          logger.info('Found ' + bcache_urls.size + ' bcache type CDN URLs, future replacement will be chosen from these URLs.', { bcache_urls });
+
           replacementType = 'bcache';
 
           const bcacheUrlsArray = Array.from(bcache_urls);
@@ -267,6 +262,8 @@ function createCDNUtil() {
         // Next we try HTTP 302/MCDN upgcxcode urls, since we can replace their
         // hosts w/ bcache/mirror type upgcxcode hosts, it is not that bad
         case (mcdn_upgcxcode_urls.size > 0): {
+          logger.info('Found ' + mcdn_upgcxcode_urls.size + ' mcdn upgcxcode type CDN URLs, future replacement will be chosen from these URLs with host replaced.', { mcdn_upgcxcode_urls });
+
           replacementType = 'mcdn upgcxcode -> host replacement';
 
           const mcdnUpgcxcodeUrlsArray = Array.from(mcdn_upgcxcode_urls);
@@ -280,6 +277,8 @@ function createCDNUtil() {
         }
         // Next we try szbdyd.com urls with either xy_usource or upgcxcode host replacement
         case (szbdyd_urls.size > 0): {
+          logger.info('Found ' + szbdyd_urls.size + ' szbdyd.com type CDN URLs, future replacement will be chosen from these URLs with xy_usource or upgcxcode host replacement.', { szbdyd_urls });
+
           replacementType = 'szbdyd.com -> xy_usource or upgcxcode host replacement';
 
           const xyusourceUrlsArray = Array.from(szbdyd_urls);
@@ -300,6 +299,8 @@ function createCDNUtil() {
         // We are left with pure IP cdn urls, or mcdn.bilivideo.* urls that are not
         // upgcxcode type, we can return proxy-wrapped mcdn tf url
         case (mcdn_tf_urls.size > 0): {
+          logger.info('Found ' + mcdn_tf_urls.size + ' mcdn tf type CDN URLs, future replacement will be proxy-wrapped.', { mcdn_tf_urls });
+
           replacementType = 'mcdn tf -> proxy-wrapped';
 
           const mcdnTfUrlsArray = Array.from(mcdn_tf_urls);
@@ -312,16 +313,20 @@ function createCDNUtil() {
           break;
         }
         default: {
+          logger.error('Failed to get replacement CDN URL', { knownUrls });
+
           replacementType = 'none';
 
-          logger.warn('Failed to get replacement CDN URL');
-          getReplacementUrl = (url: string | URL) => url.toString();
+          getReplacementUrl = (url: string | URL) => basicP2PReplacement(typeof url === 'string' ? new URL(url) : url, 'getReplacementCdnUrl fallback');
           break;
         }
       }
 
       knownUrls.forEach((url) => {
-        cdnDatas.set(url, {
+        const urlObj = new URL(url);
+        const key = urlObj.pathname + urlObj.search;
+
+        cdnDatas.set(key, {
           replacementType,
           getReplacementUrl,
           // Optional meta
@@ -357,8 +362,6 @@ function createCDNUtil() {
 
   function basicP2PReplacement(url: URL, meta: string): string {
     const urlStr = url.href;
-
-    logger.warn('PlayInfo not collected yet! Opt-in basic P2P replacement', { meta, url: urlStr });
 
     if (urlStr.includes('/upgcxcode/')) {
       // Even if we have not collected any CDN info yet, we can still try our best to avoid P2P CDNs
