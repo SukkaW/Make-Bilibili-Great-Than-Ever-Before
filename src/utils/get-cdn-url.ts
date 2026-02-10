@@ -96,7 +96,17 @@ function createCDNUtil() {
       return cdnDatas;
     },
     getReplacementCdnUrl(url: string | URL, meta: string): string {
-      const urlObj = typeof url === 'string' ? new URL(url) : url;
+      let urlObj: URL;
+      if (typeof url === 'string') {
+        if (url.startsWith('//')) {
+          urlObj = new URL('https:' + url);
+        } else {
+          urlObj = new URL(url);
+        }
+      } else {
+        urlObj = url;
+      }
+
       const key = urlObj.pathname + urlObj.search;
 
       const data = cdnDatas.get(key);
