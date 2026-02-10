@@ -64,19 +64,31 @@ function createCDNUtil() {
 
   return {
     saveAndParsePlayerInfo(json: object, meta: string) {
+      let dash;
+
       if (
-        (!('data' in json)) || typeof json.data !== 'object' || json.data === null
-        || (!('dash' in json.data)) || typeof json.data.dash !== 'object' || json.data.dash === null
+        'data' in json && typeof json.data === 'object' && json.data !== null
+        && 'dash' in json.data && typeof json.data.dash === 'object' && json.data.dash !== null
       ) {
+        // normal video player
+        dash = json.data.dash;
+      } else if (
+        // bangumi video player
+        'result' in json && typeof json.result === 'object' && json.result !== null
+        && 'video_info' in json.result && typeof json.result.video_info === 'object' && json.result.video_info !== null
+        && 'dash' in json.result.video_info && typeof json.result.video_info.dash === 'object' && json.result.video_info.dash !== null
+      ) {
+        dash = json.result.video_info.dash;
+      } else {
         logger.warn('Invalid Bilibili Playinfo data', { json });
         return;
       }
 
-      if ('video' in json.data.dash && Array.isArray(json.data.dash.video)) {
-        extractCDNFromVideoOrAudio(json.data.dash.video);
+      if ('video' in dash && Array.isArray(dash.video)) {
+        extractCDNFromVideoOrAudio(dash.video);
       }
-      if ('audio' in json.data.dash && Array.isArray(json.data.dash.audio)) {
-        extractCDNFromVideoOrAudio(json.data.dash.audio);
+      if ('audio' in dash && Array.isArray(dash.audio)) {
+        extractCDNFromVideoOrAudio(dash.audio);
       }
 
       logger.info('CDN URLs extracted', { meta });
