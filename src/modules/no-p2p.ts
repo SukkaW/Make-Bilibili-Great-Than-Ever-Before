@@ -10,7 +10,8 @@ import { onDOMContentLoaded } from '../utils/on-load-event';
 const knownNonVideoPattern = createRetrieKeywordFilter([
   'bilibili.com',
   'hdslb.com',
-  'bvc.bilivideo.com'
+  'bvc.bilivideo.com',
+  'bvc-drm.bilivideo.com'
 ]);
 function isKnownNonVideoUrl(url: string | URL): boolean {
   const urlStr = url.toString();
