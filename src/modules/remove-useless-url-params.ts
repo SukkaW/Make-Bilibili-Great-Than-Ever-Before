@@ -11,6 +11,7 @@ const uselessUrlParams = [
   'timestamp',
   'up_id',
   'vd_source',
+  'trackid',
   /^share/,
   /^spm/
 ];
