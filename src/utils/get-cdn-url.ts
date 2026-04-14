@@ -30,7 +30,9 @@ const knownP2pCdnDomainPattern = createRetrieKeywordFilter([
   '.mcdn.bilivideo',
   'szbdyd.com',
   '.nexusedgeio.com',
-  '.ahdohpiechei.com' // 七牛云 PCDN
+  '.ahdohpiechei.com', // 七牛云 PCDN
+
+  'upos-sz-mirror14b.bilivideo.com' // mirror type, upgcxcode, but it has no valid SSL cert, its SSL cert is for PCDN (*.bilivideo.cn)
 ]);
 
 function isP2PCDNDomain(hostname: string): boolean {
