@@ -23,33 +23,30 @@
     "@types/tampermonkey": "^5.0.5",
     "fake-indexeddb": "^6.2.5",
     "flru": "^1.0.2",
-    "foxts": "^5.0.4"
+    "foxts": "^5.4.0"
   },
   "devDependencies": {
-    "@eslint-sukka/node": "^8.3.0",
+    "@eslint-sukka/node": "^8.9.3",
     "@rollup/plugin-commonjs": "^28.0.9",
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-replace": "^6.0.3",
-    "@swc/core": "^1.15.10",
-    "@swc/helpers": "^0.5.18",
-    "@types/node": "^22.19.7",
-    "bumpp": "^10.4.0",
-    "eslint": "^9.39.2",
-    "eslint-config-sukka": "^8.3.0",
-    "eslint-formatter-sukka": "^8.3.0",
-    "rollup": "^4.56.0",
+    "@swc/core": "^1.15.26",
+    "@swc/helpers": "^0.5.21",
+    "@types/node": "^22.19.17",
+    "bumpp": "^10.4.1",
+    "eslint": "^10.2.1",
+    "eslint-config-sukka": "^8.9.3",
+    "eslint-formatter-sukka": "^8.9.3",
+    "rollup": "^4.60.1",
     "rollup-plugin-swc3": "^0.12.1",
     "rollup-plugin-userscript-metablock": "^0.4.3",
-    "typescript": "^5.9.3"
+    "typescript": "^6.0.3"
   },
-  "packageManager": "pnpm@10.28.1",
+  "packageManager": "pnpm@10.33.0",
   "pnpm": {
     "onlyBuiltDependencies": [
       "@swc/core",
       "unrs-resolver"
-    ],
-    "overrides": {
-      "eslint>chalk": "npm:ansis@^3.17.0"
-    }
+    ]
   }
 }
