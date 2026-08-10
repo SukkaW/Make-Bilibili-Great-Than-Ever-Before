@@ -135,11 +135,13 @@ const noWebRTC: MakeBilibiliGreatThanEverBeforeModule = {
       }
     }
 
-    for (const rtc of rtcPcNames) {
+    for (let i = 0, len = rtcPcNames.length; i < len; i++) {
+      const rtc = rtcPcNames[i];
       defineReadonlyProperty(unsafeWindow, rtc, MockRTCPeerConnection);
     }
 
-    for (const dc of rtcDcNames) {
+    for (let i = 0, len = rtcDcNames.length; i < len; i++) {
+      const dc = rtcDcNames[i];
       defineReadonlyProperty(unsafeWindow, dc, MockDataChannel);
     }
 

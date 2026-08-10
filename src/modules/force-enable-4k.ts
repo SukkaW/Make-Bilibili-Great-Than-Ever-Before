@@ -26,7 +26,8 @@ function hook({ onlyCallOnce }: MakeBilibiliGreatThanEverBeforeHook) {
       keysToDelete.push(key);
     }
   }
-  for (const key of keysToDelete) {
+  for (let i = 0, len = keysToDelete.length; i < len; i++) {
+    const key = keysToDelete[i];
     localStorage.removeItem(key);
   }
 

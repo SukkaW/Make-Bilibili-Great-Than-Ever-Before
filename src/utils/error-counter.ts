@@ -22,11 +22,10 @@ export class ErrorCounter {
     if (this.tail) {
       this.tail.next = newNode;
       newNode.prev = this.tail;
-      this.tail = newNode;
     } else {
       this.head = newNode;
-      this.tail = newNode;
     }
+    this.tail = newNode;
 
     this.$size++;
   }

@@ -20,7 +20,7 @@ const fixCopyInCV: MakeBilibiliGreatThanEverBeforeModule = {
     const holder = document.querySelector('.article-holder');
     if (holder) {
       holder.classList.remove('unable-reprint');
-      holder.addEventListener('copy', e => e.stopImmediatePropagation(), true);
+      holder.addEventListener('copy', e => e.stopImmediatePropagation(), { capture: true });
     }
   }
 };

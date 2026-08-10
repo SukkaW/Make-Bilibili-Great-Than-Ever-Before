@@ -22,7 +22,7 @@ function getEnabled(m: MakeBilibiliGreatThanEverBeforeModule) {
   return GM_getValue<boolean>(KEY_PREFIX + m.name, true);
 }
 
-async function setEnabled(m: MakeBilibiliGreatThanEverBeforeModule, enabled: boolean) {
+function setEnabled(m: MakeBilibiliGreatThanEverBeforeModule, enabled: boolean) {
   return GM.setValue(KEY_PREFIX + m.name, enabled);
 }
 

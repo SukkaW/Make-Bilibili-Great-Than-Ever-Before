@@ -70,7 +70,7 @@ const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
     }
 
     onXhrResponse((_method, url, response, _xhr) => {
-      if (url.toString().includes('api.bilibili.com/x/player/wbi/playurl') && typeof response === 'string') {
+      if (typeof response === 'string' && url.toString().includes('api.bilibili.com/x/player/wbi/playurl')) {
         try {
           getCDNUtil().saveAndParsePlayerInfo(JSON.parse(response), 'playurl XHR API');
         } catch (e) {
@@ -87,6 +87,7 @@ const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
         ...HTMLMediaElementPrototypeSrcDescriptor,
         set(value: string) {
           if (typeof value !== 'string') {
+            // eslint-disable-next-line sukka/unicorn/no-useless-coercion -- fuck typescript-eslint about never
             value = String(value);
           }
 

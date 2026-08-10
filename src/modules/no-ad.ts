@@ -12,6 +12,8 @@ declare global {
   }
 }
 
+declare const unsafeWindow: typeof globalThis & Window;
+
 const noAd: MakeBilibiliGreatThanEverBeforeModule = {
   name: 'no-ad',
   description: '防止叔叔通过广告给自己赚棺材钱',
@@ -56,10 +58,15 @@ const noAd: MakeBilibiliGreatThanEverBeforeModule = {
       }
     `);
 
-    if (unsafeWindow.__INITIAL_STATE__?.adData) {
-      for (const key in unsafeWindow.__INITIAL_STATE__.adData) {
-        if (!Array.isArray(unsafeWindow.__INITIAL_STATE__.adData[key])) continue;
-        for (const item of unsafeWindow.__INITIAL_STATE__.adData[key]) {
+    const adData = unsafeWindow.__INITIAL_STATE__?.adData;
+    if (adData) {
+      const keys = Object.keys(adData);
+      for (let i = 0, len = keys.length; i < len; i++) {
+        const key = keys[i];
+        const items = adData[key];
+        if (!Array.isArray(items)) continue;
+        for (let j = 0, itemLen = items.length; j < itemLen; j++) {
+          const item = items[j];
           item.name = 'B 站未来有可能会倒闭，但绝不会变质';
           item.pic = 'https://static.hdslb.com/images/transparent.gif';
           item.url = 'https://space.bilibili.com/208259';

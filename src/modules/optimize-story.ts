@@ -20,8 +20,8 @@ const optimizeStory: MakeBilibiliGreatThanEverBeforeModule = {
 
     onLoaded(() => {
       const tabContainer = document.querySelector('.bili-dyn-list-tabs__list');
-      const placeHolder = document.createElement('div');
-      placeHolder.style.flex = '1';
+      const placeholder = document.createElement('div');
+      placeholder.style.flex = '1';
       const switchButton = document.createElement('a');
       switchButton.id = 'wide-mode-switch';
       switchButton.className = 'bili-dyn-list-tabs__item';
@@ -36,7 +36,7 @@ const optimizeStory: MakeBilibiliGreatThanEverBeforeModule = {
           document.documentElement.removeAttribute('wide');
         }
       });
-      tabContainer?.appendChild(placeHolder);
+      tabContainer?.appendChild(placeholder);
       tabContainer?.appendChild(switchButton);
     });
   }

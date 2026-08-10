@@ -15,6 +15,7 @@ import { createRetrieKeywordFilter } from 'foxts/retrie';
 import { logger } from '../logger';
 import { lazyValue } from 'foxts/lazy-value';
 import flru from 'flru';
+import { split0th } from 'foxts/split-nth';
 
 const PROXY_TF = 'proxy-tf-all-ws.bilivideo.com';
 const FALLBACK_CDN_HOST = 'upos-sz-mirrorali.bilivideo.com';
@@ -42,7 +43,7 @@ function isP2PCDNDomain(hostname: string): boolean {
   // upos-sz-302ppio.bilivideo.com -> *.nexusedgeio.com
   // upos-sz-302kodo.bilivideo.com -> *.ahdohpiechei.com
   // pattern: *-*302*.*
-  const subdomain = hostname.split('.', 1)[0];
+  const subdomain = split0th(hostname, '.');
   return subdomain.includes('302');
 }
 
@@ -126,7 +127,8 @@ function createCDNUtil() {
     // Each array consists of different quality levels
     // We do not care about the quality levels, just extract all URLs per group
     // Which we will be matching against later
-    for (const videoOrAudio of data) {
+    for (let i = 0, len = data.length; i < len; i++) {
+      const videoOrAudio = data[i];
       if (typeof videoOrAudio !== 'object' || videoOrAudio === null) {
         continue;
       }

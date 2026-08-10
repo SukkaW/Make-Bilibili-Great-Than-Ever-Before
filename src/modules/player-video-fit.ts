@@ -2,11 +2,7 @@ import type { MakeBilibiliGreatThanEverBeforeModule } from '../types';
 import { tagged as css } from 'foxts/tagged';
 
 function toggleMode(enabled: boolean) {
-  if (enabled) {
-    document.body.setAttribute('video-fit', '');
-  } else {
-    document.body.removeAttribute('video-fit');
-  }
+  document.body.toggleAttribute('video-fit', enabled);
 }
 
 const playerVideoFit: MakeBilibiliGreatThanEverBeforeModule = {

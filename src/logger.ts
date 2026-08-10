@@ -19,7 +19,7 @@ export const logger = {
   warn: consoleWarn.bind(console, '[make-bilibili-great-than-ever-before]'),
   info: consoleInfo.bind(console, '[make-bilibili-great-than-ever-before]'),
   debug: process.env.DEBUG ? consoleDebug.bind(console, '[make-bilibili-great-than-ever-before]') : noop,
-  trace(...args: any[]) {
+  trace(...args: unknown[]) {
     consoleGroupCollapsed.bind(console, '[make-bilibili-great-than-ever-before]')(...args);
     consoleTrace(...args);
     consoleGroupEnd();

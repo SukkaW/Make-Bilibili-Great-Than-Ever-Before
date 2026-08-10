@@ -6,6 +6,9 @@
     "jsx": "react-jsx",
     "module": "preserve",
     "moduleResolution": "bundler",
+    "types": [
+      "tampermonkey"
+    ],
     "resolveJsonModule": true,
     "allowJs": true,
     "declaration": false,

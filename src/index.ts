@@ -12,8 +12,7 @@ import playerVideoFit from './modules/player-video-fit';
 import removeBlackBackdropFilter from './modules/remove-black-backdrop-filter';
 import removeUselessUrlParams from './modules/remove-useless-url-params';
 import useSystemFonts from './modules/use-system-fonts';
-import type { FetchArgs, OnXhrOpenHook, XHRDetail, XHROpenArgs } from './types';
-import type { MakeBilibiliGreatThanEverBeforeHook, MakeBilibiliGreatThanEverBeforeModule, OnBeforeFetchHook } from './types';
+import type { FetchArgs, OnXhrOpenHook, XHRDetail, XHROpenArgs, MakeBilibiliGreatThanEverBeforeHook, MakeBilibiliGreatThanEverBeforeModule, OnBeforeFetchHook } from './types';
 import disableAV1 from './modules/disable-av1';
 import defuseStorage from './modules/defuse-storage';
 import forceEnable4K from './modules/force-enable-4k';
@@ -159,7 +158,8 @@ import { initModuleMenu } from './utils/module-menu';
           if (fetchArgs === null) {
             abortFetch = true;
             break;
-          } else if ('body' in fetchArgs) {
+          }
+          if ('body' in fetchArgs) {
             abortFetch = true;
             mockResponse = fetchArgs;
             break;
@@ -182,6 +182,7 @@ import { initModuleMenu } from './utils/module-menu';
       }
       return response;
     };
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- cache original method
   })(unsafeWindow.fetch);
 
   const xhrInstances = new WeakMap<XMLHttpRequest, XHRDetail>();

@@ -45,8 +45,10 @@ function removeTracking(url: string | URL | null | undefined) {
     if (!url.search) return url;
 
     const keys = Array.from(url.searchParams.keys());
-    for (const key of keys) {
-      for (const item of uselessUrlParams) {
+    for (let i = 0, len = keys.length; i < len; i++) {
+      const key = keys[i];
+      for (let j = 0, len = uselessUrlParams.length; j < len; j++) {
+        const item = uselessUrlParams[j];
         if (typeof item === 'string') {
           if (item === key) url.searchParams.delete(key);
         } else if ('test' in item && item.test(key)) {
