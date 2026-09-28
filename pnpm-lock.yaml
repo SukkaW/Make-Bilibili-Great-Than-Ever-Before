@@ -172,6 +172,9 @@ importers:
       fake-indexeddb:
         specifier: ^6.2.5
         version: 6.2.5
+      fast-percentile:
+        specifier: ^1.0.0
+        version: 1.0.0
       flru:
         specifier: ^1.0.2
         version: 1.0.2
@@ -1134,6 +1137,9 @@ packages:
 
   fast-levenshtein@2.0.6:
     resolution: {integrity: sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==}
+
+  fast-percentile@1.0.0:
+    resolution: {integrity: sha512-P/0EjlYXOLxMUeYiOSrPLmNZ3DqtfAeZ5yZ2OOjOrH8FDEBt2wbMZQdhbjEgtB7EHZfRajib8CmWhFWeaHR5uA==}
 
   fdir@6.5.0:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
@@ -2395,6 +2401,8 @@ snapshots:
   fast-json-stable-stringify@2.1.0: {}
 
   fast-levenshtein@2.0.6: {}
+
+  fast-percentile@1.0.0: {}
 
   fdir@6.5.0(picomatch@4.0.3):
     optionalDependencies:

@@ -19,7 +19,7 @@ export function initModuleMenu(mod: MakeBilibiliGreatThanEverBeforeModule) {
 }
 
 function getEnabled(m: MakeBilibiliGreatThanEverBeforeModule) {
-  return GM_getValue<boolean>(KEY_PREFIX + m.name, true);
+  return GM_getValue<boolean>(KEY_PREFIX + m.name, m.defaultEnabled ?? true);
 }
 
 function setEnabled(m: MakeBilibiliGreatThanEverBeforeModule, enabled: boolean) {

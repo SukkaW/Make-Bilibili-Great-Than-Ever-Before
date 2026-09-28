@@ -1,43 +1,16 @@
 import { noop } from 'foxts/noop';
-import { logger } from '../logger';
 import type { MakeBilibiliGreatThanEverBeforeModule } from '../types';
 import { defineReadonlyProperty } from '../utils/define-readonly-property';
-import { getCDNUtil } from '../utils/get-cdn-url';
-import { never } from 'foxts/guard';
-import { createRetrieKeywordFilter } from 'foxts/retrie';
-import { onDOMContentLoaded } from '../utils/on-load-event';
+import { noP2PPolicy } from './no-p2p/policy';
 
-const knownNonVideoPattern = createRetrieKeywordFilter([
-  'bilibili.com',
-  'hdslb.com',
-  'bvc.bilivideo.com',
-  'bvc-drm.bilivideo.com'
-]);
-function isKnownNonVideoUrl(url: string | URL): boolean {
-  const urlStr = url.toString();
-  if (knownNonVideoPattern(urlStr)) {
-    return true;
-  }
-  if (typeof url === 'string') {
-    return url.startsWith('data:') || url.startsWith('blob:');
-  }
-  return url.protocol === 'data:' || url.protocol === 'blob:';
-}
-
-declare global {
-  interface Window {
-    __playinfo__?: unknown
-  }
-}
-
-function isObject(value: unknown): value is object {
-  return typeof value === 'object' && value !== null;
-}
-
+/**
+ * The player request interceptor's policy phase: no media from P2P / PCDN hosts. The player's
+ * P2P URLs are replaced by official ones
+ */
 const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
   name: 'no-p2p',
   description: '防止叔叔用 P2P CDN 省下纸钱',
-  any({ onXhrOpen, onBeforeFetch, onXhrResponse }) {
+  any({ player }) {
     class MockPCDNLoader { }
 
     class MockBPP2PSDK {
@@ -50,95 +23,10 @@ const noP2P: MakeBilibiliGreatThanEverBeforeModule = {
     defineReadonlyProperty(unsafeWindow, 'BPP2PSDK', MockBPP2PSDK);
     defineReadonlyProperty(unsafeWindow, 'SeederSDK', MockSeederSDK);
 
-    if (isObject(unsafeWindow.__playinfo__)) {
-      getCDNUtil().saveAndParsePlayerInfo(unsafeWindow.__playinfo__, 'unsafeWindow.__playinfo__');
-    } else {
-      logger.warn('No unsafeWindow.__playinfo__ found, waiting for a microtask and check again.', { json: unsafeWindow.__playinfo__ });
-
-      Promise.resolve().finally(() => {
-        if (isObject(unsafeWindow.__playinfo__)) {
-          getCDNUtil().saveAndParsePlayerInfo(unsafeWindow.__playinfo__, 'unsafeWindow.__playinfo__ (microtask)');
-        } else {
-          logger.warn('No unsafeWindow.__playinfo__ found in microtask either, waiting for DOMContentLoaded and check again.', { json: unsafeWindow.__playinfo__ });
-          onDOMContentLoaded(() => {
-            if (isObject(unsafeWindow.__playinfo__)) {
-              getCDNUtil().saveAndParsePlayerInfo(unsafeWindow.__playinfo__, 'unsafeWindow.__playinfo__ (DOMContentLoaded)');
-            }
-          });
-        }
-      });
-    }
-
-    onXhrResponse((_method, url, response, _xhr) => {
-      if (typeof response === 'string' && url.toString().includes('api.bilibili.com/x/player/wbi/playurl')) {
-        try {
-          getCDNUtil().saveAndParsePlayerInfo(JSON.parse(response), 'playurl XHR API');
-        } catch (e) {
-          logger.error('Failed to parse playinfo XHR API JSON', e, { response });
-        }
-      }
-
-      return response;
-    });
-
-    // Patch new Native Player
-    (function (HTMLMediaElementPrototypeSrcDescriptor) {
-      Object.defineProperty(unsafeWindow.HTMLMediaElement.prototype, 'src', {
-        ...HTMLMediaElementPrototypeSrcDescriptor,
-        set(value: string) {
-          if (typeof value !== 'string') {
-            // eslint-disable-next-line sukka/unicorn/no-useless-coercion -- fuck typescript-eslint about never
-            value = String(value);
-          }
-
-          if (!value.startsWith('blob:') && !value.startsWith('data:')) {
-            // we don't care about blob urls
-            // they will use another way to fetch the real url and turn it into blob url anyway
-            // we can intercept that fetch/XHR instead
-            try {
-              value = getCDNUtil().getReplacementCdnUrl(value, 'HTMLMediaElement.prototype.src');
-            } catch (e) {
-              logger.error('Failed to handle HTMLMediaElement.prototype.src setter', e, { value });
-            }
-          }
-
-          HTMLMediaElementPrototypeSrcDescriptor?.set?.call(this, value);
-        }
-      });
-    })(Object.getOwnPropertyDescriptor(unsafeWindow.HTMLMediaElement.prototype, 'src'));
-
-    onXhrOpen((xhrOpenArgs) => {
-      const xhrUrl = xhrOpenArgs[1];
-      if (isKnownNonVideoUrl(xhrUrl)) {
-        return xhrOpenArgs;
-      }
-
-      try {
-        xhrOpenArgs[1] = getCDNUtil().getReplacementCdnUrl(xhrUrl, 'XMLHttpRequest.prototype.open');
-      } catch (e) {
-        logger.error('Failed to replace P2P for XMLHttpRequest.prototype.open', e, { xhrUrl });
-      }
-
-      return xhrOpenArgs;
-    });
-
-    onBeforeFetch((fetchArgs: [RequestInfo | URL, RequestInit?]) => {
-      let input = fetchArgs[0];
-      if (typeof input === 'string' || 'href' in input) { // string | URL
-        if (!isKnownNonVideoUrl(input)) {
-          input = getCDNUtil().getReplacementCdnUrl(input, 'fetch');
-          fetchArgs[0] = input;
-        }
-      } else if ('url' in input) { // Request
-        if (!isKnownNonVideoUrl(input.url)) {
-          input = new Request(getCDNUtil().getReplacementCdnUrl(input.url, 'fetch'), input);
-          fetchArgs[0] = input;
-        }
-      } else {
-        never(input, 'fetchArgs[0]');
-      }
-
-      return fetchArgs;
+    player.registerPhase({
+      type: 'policy',
+      name: 'no-p2p',
+      filter: noP2PPolicy
     });
   }
 };
