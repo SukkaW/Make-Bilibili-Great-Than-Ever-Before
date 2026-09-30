@@ -1,16 +1,12 @@
 /**
  * The observe phase, always on and read-only: native media XHRs teach the host model how fast
- * each host is, and index responses (native or synthetic) give the segment timeline.
+ * each host is.
  */
 
 import { p } from 'fast-percentile';
 import type { HostModel } from './host-model';
 import { MediaOutcome, MIN_RATE_SAMPLE_BYTES } from './host-model';
-import { byteRangeLength } from './range';
-import type { ByteRange } from './range';
 import type { MediaAddress, MediaFile } from './registry';
-import { parseSidx } from './sidx';
-import type { SidxStore } from './sidx';
 
 /** The gaps between a request's chunks are reported as their 90th percentile */
 const p90 = p(90);
@@ -27,40 +23,8 @@ export function stopWatching(xhr: XMLHttpRequest) {
   }
 }
 
-/**
- * Keep the segment timeline of a file once a response carrying its whole index arrives. Only a
- * body of exactly the requested range: not an error page, nor a whole file served for a range
- */
-export function ingestSidx(sidx: SidxStore, file: MediaFile, range: ByteRange, body: unknown) {
-  const index = file.segmentBase?.index;
-  if (
-    !index || sidx.has(file.key) || range.start > index.start || range.end < index.end
-    || !hasByteLength(body) || body.byteLength !== byteRangeLength(range)
-  ) {
-    return;
-  }
-  const bytes = new Uint8Array(body, index.start - range.start, index.end - index.start + 1);
-  const parsed = parseSidx(bytes, index.start);
-  if (parsed !== null) {
-    sidx.set(file.key, parsed);
-  }
-}
-
-export function watchForSidx(xhr: XMLHttpRequest, sidx: SidxStore, file: MediaFile, range: ByteRange) {
-  const index = file.segmentBase?.index;
-  if (!index || sidx.has(file.key) || range.start > index.start || range.end < index.end) {
-    return;
-  }
-  const onLoad = () => {
-    watching.delete(xhr);
-    ingestSidx(sidx, file, range, xhr.response);
-  };
-  xhr.addEventListener('load', onLoad, { once: true });
-  watching.set(xhr, () => xhr.removeEventListener('load', onLoad));
-}
-
 /** Time a media XHR the browser sends itself, and report how its host did */
-export function observeNativeMediaXhr(xhr: XMLHttpRequest, address: MediaAddress, file: MediaFile, range: ByteRange, hosts: HostModel, sidx: SidxStore) {
+export function observeNativeMediaXhr(xhr: XMLHttpRequest, address: MediaAddress, file: MediaFile, hosts: HostModel) {
   const { hostname } = address;
   const startedAt = performance.now();
   const cold = hosts.isCold(hostname, startedAt);
@@ -131,7 +95,6 @@ export function observeNativeMediaXhr(xhr: XMLHttpRequest, address: MediaAddress
         rate: bytes >= MIN_RATE_SAMPLE_BYTES && lastAt > firstAt ? bytes / (lastAt - firstAt) : null,
         gap: gaps.length === 0 ? null : p90(gaps)
       }, now);
-      ingestSidx(sidx, file, range, xhr.response);
     }
   };
 
@@ -151,10 +114,6 @@ export function observeNativeMediaXhr(xhr: XMLHttpRequest, address: MediaAddress
     xhr.removeEventListener('timeout', onTimeout);
     xhr.removeEventListener('loadend', onLoadEnd);
   }
-}
-
-function hasByteLength(value: unknown): value is ArrayBuffer {
-  return typeof value === 'object' && value !== null && 'byteLength' in value;
 }
 
 function outcomeOfStatus(status: number, deadline: number): MediaOutcome {

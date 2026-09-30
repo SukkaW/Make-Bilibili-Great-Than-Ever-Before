@@ -72,6 +72,8 @@ export interface Attempt {
   readonly startedAt: number,
   /** Response headers arrived */
   headersAt: number,
+  /** Where a redirect led, if one did */
+  redirectedTo: string | null,
   firstByteAt: number,
   /** Size of the first chunk: left out of speed measurements, it arrives with the first byte */
   firstChunkBytes: number,
@@ -100,9 +102,9 @@ export interface Job {
   readonly header: boolean,
   /** Fetched ahead of the player: `current` is what it will ask for first */
   readonly warmup: 'current' | 'other' | null,
-  /** Updated every tick from the playback clock */
+  /** Set when the job starts, see `setUrgency` in the engine */
   cls: UrgencyClass,
-  /** When playback needs this range (performance.now() time), updated every tick */
+  /** When its bytes are wanted (performance.now() time): past its start by how urgent it is */
   deadline: number,
   readonly createdAt: number,
   /** Rescue budget: help for pieces that miss their deadline although on pace */
@@ -126,6 +128,8 @@ export interface Job {
   total: number | null,
   /** Distinct bytes written so far: the XHR progress */
   covered: number,
+  /** Every byte received for it: duplicates, overlaps and cut-off attempts included */
+  fetched: number,
   /** Last time new bytes were written: stuck too long, unfinished pieces go to the player's own URL */
   lastProgressAt: number,
   /** Distinct hosts that delivered bytes, for the debug log */

@@ -1,4 +1,5 @@
 import { isAbortErrorLike } from 'foxts/abort-error';
+import { isP2PCDNDomain } from '../../core/player/cdn-classify';
 import { MediaOutcome } from '../../core/player/host-model';
 import type { ContentRange } from '../../core/player/range';
 
@@ -11,14 +12,14 @@ export interface ResponseVerdict {
 }
 
 export function classifyResponse(
-  response: Pick<Response, 'type' | 'status'>,
+  response: Pick<Response, 'type' | 'status' | 'redirected' | 'url'>,
   contentRange: ContentRange | null,
   contentLength: number | null,
   expected: { start: number, end: number, total: number | null, addressExpired: boolean }
 ): ResponseVerdict {
   const invalid = (outcome: MediaOutcome): ResponseVerdict => ({ outcome, total: null });
 
-  if (response.type === 'opaqueredirect') {
+  if (response.type === 'opaqueredirect' || (response.redirected && isP2PCDNDomain(hostnameOf(response.url)))) {
     return invalid(MediaOutcome.Redirect);
   }
 
@@ -72,4 +73,13 @@ export function classifyError(error: unknown, abortReason: AbortReason | null, r
 /** Outcomes after which the same bytes are worth asking for again elsewhere */
 export function isRetryable(outcome: MediaOutcome): boolean {
   return outcome !== MediaOutcome.Ok && outcome !== MediaOutcome.Canceled && outcome !== MediaOutcome.Integrity && outcome !== MediaOutcome.EofClamp;
+}
+
+/** `''` for an invalid URL */
+export function hostnameOf(url: string) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
 }

@@ -32,7 +32,8 @@ async function passthrough(nativeFetch: typeof fetch, url: string, range: ByteRa
       headers: { Range: `bytes=${range.start}-${range.end}` },
       mode: 'cors',
       credentials: 'same-origin',
-      cache: 'no-store',
+      // Like the page's XHR: no `no-cache` request headers
+      cache: 'default',
       referrerPolicy: 'strict-origin-when-cross-origin',
       signal: sink.signal
     });

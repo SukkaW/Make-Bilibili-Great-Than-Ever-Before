@@ -118,6 +118,7 @@ export function createScheduler(pool: HostPool, model: HostModel, hooks: Schedul
       timeouts: model.timeouts(host.hostname, job.file, now),
       startedAt: now,
       headersAt: 0,
+      redirectedTo: null,
       firstByteAt: 0,
       firstChunkBytes: 0,
       lastByteAt: 0,

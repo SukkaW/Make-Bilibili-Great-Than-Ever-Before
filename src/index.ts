@@ -27,7 +27,9 @@ declare global {
   const process: {
     env: {
       NODE_ENV: 'development' | 'production',
-      DEBUG?: 'true' | 'false'
+      DEBUG?: 'true' | 'false',
+      /** Debug builds only: different for every build, see `rollup.config.ts` */
+      BUILD_ID?: string
     }
   };
 }

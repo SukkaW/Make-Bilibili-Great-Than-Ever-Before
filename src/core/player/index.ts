@@ -13,7 +13,7 @@
  * 5. serve (`thread-ripper`): take over the download of a media XHR, splitting the range into
  *    pieces raced and hedged across every acceptable candidate and reassembling them into one
  *    synthetic response, or decline: the browser then fetches the selected URL
- * 6. observe (always): how the browser's own media requests went -> host model; segment index
+ * 6. observe (always): how the browser's own media requests went -> host model
  *
  * Without a policy phase every candidate is acceptable and the browser's URL is left alone.
  *
@@ -36,17 +36,15 @@ import { createDebugPassthroughPhase } from './debug-passthrough';
 import { getDebugOption } from '../../utils/debug-menu';
 import { mediaXhrMode } from '../../debug-options';
 import { createHostModel } from './host-model';
+import { createPlaybackMetrics } from './metrics';
+import type { PlaybackMetrics } from './metrics';
 import type { HostModel } from './host-model';
-import { observeNativeMediaXhr, stopWatching, watchForSidx } from './observer';
-import { createPlaybackClock } from './playback-clock';
-import type { PlaybackClock } from './playback-clock';
+import { observeNativeMediaXhr, stopWatching } from './observer';
 import { initPlayinfoCapture } from './playinfo';
 import { parseRangeHeader } from './range';
 import type { ByteRange } from './range';
 import { createMediaRegistry, toMediaAddress } from './registry';
 import type { MediaAddress, MediaFile, MediaFileMatch, MediaRegistry } from './registry';
-import { createSidxStore } from './sidx';
-import type { SidxStore } from './sidx';
 
 /** Which interception point a media request came through: its name, for the logs */
 export enum MediaRequestVia {
@@ -92,9 +90,8 @@ export interface PlayerInterceptor {
   readonly registry: MediaRegistry,
   /** Everything learned about every CDN host, by every phase and the observer */
   readonly hosts: HostModel,
-  /** Segment timelines by file key */
-  readonly sidx: SidxStore,
-  readonly clock: PlaybackClock,
+  /** Debug builds only: playback and request metrics, compared across sessions */
+  readonly metrics: PlaybackMetrics | null,
   /** Every acceptable URL of a file, for requests of its own (the warm-up) */
   candidates(this: void, file: MediaFile): readonly MediaCandidate[],
   registerPhase(this: void, phase: PlayerInterceptorPhase): void,
@@ -121,11 +118,17 @@ export type PlayerInterceptorHooks = Pick<
 export function createPlayerInterceptor(hook: PlayerInterceptorHooks): PlayerInterceptor {
   const registry = createMediaRegistry();
   const hosts = createHostModel();
-  const sidx = createSidxStore();
-  const clock = createPlaybackClock();
 
   const policyPhases: MediaPolicyPhase[] = [];
   const servePhases: MediaServePhase[] = [];
+
+  const metrics = process.env.DEBUG
+    ? createPlaybackMetrics(() => {
+      const names = [...policyPhases, ...servePhases].map(phase => phase.name).join('+');
+      const mode = getDebugOption(mediaXhrMode);
+      return mode === 'default' ? names : `${names} (${mode})`;
+    })
+    : null;
 
   /**
    * By href, as the page gave it: the player asks for every segment of a file with the same URL,
@@ -141,6 +144,9 @@ export function createPlayerInterceptor(hook: PlayerInterceptorHooks): PlayerInt
     const files = registry.ingestPlayinfo(json, meta);
     if (!files) {
       return;
+    }
+    if (files.length > 0) {
+      metrics?.note(files[0], `playinfo (${meta}): ${files.length} files`);
     }
     recentPlayinfos.enqueue([json, files]);
     if (recentPlayinfos.size > 3) {
@@ -314,11 +320,10 @@ export function createPlayerInterceptor(hook: PlayerInterceptorHooks): PlayerInt
     const { match, range, address } = request;
     if (match !== null && range !== null) {
       try {
-        if (responder) {
-          // A serve phase reports its own requests; only the segment index is left to catch
-          watchForSidx(ctx.xhr, sidx, match.file, range);
-        } else {
-          observeNativeMediaXhr(ctx.xhr, address, match.file, range, hosts, sidx);
+        metrics?.watchRequest(ctx.xhr, match.file, range, address.hostname, responder !== null);
+        // A serve phase reports its own requests
+        if (!responder) {
+          observeNativeMediaXhr(ctx.xhr, address, match.file, hosts);
         }
       } catch (e) {
         logger.error('[player-interceptor] failed to observe media XHR', e, { url: ctx.url });
@@ -330,8 +335,7 @@ export function createPlayerInterceptor(hook: PlayerInterceptorHooks): PlayerInt
   const interceptor: PlayerInterceptor = {
     registry,
     hosts,
-    sidx,
-    clock,
+    metrics,
     candidates: file => acceptable(null, file),
     registerPhase(phase) {
       if (phase.type === 'policy') {
@@ -368,10 +372,9 @@ export function createPlayerInterceptor(hook: PlayerInterceptorHooks): PlayerInt
         hosts: () => hosts.snapshot(performance.now()),
         file(url: string) {
           const match = registry.findFile(toMediaAddress(new URL(url, unsafeWindow.location.href)));
-          return match && { file: match.file, hosts: hosts.fileSnapshot(match.file, performance.now()), sidx: sidx.get(match.file.key) };
+          return match && { file: match.file, hosts: hosts.fileSnapshot(match.file, performance.now()) };
         },
         page: (kind: 'video' | 'audio' = 'video') => hosts.pageSnapshot(kind, performance.now()),
-        playback: () => clock.state(),
         phases: () => [...policyPhases, ...servePhases].map(({ type, name }) => ({ type, name })),
         playinfos: () => Array.from(recentPlayinfos)
       }

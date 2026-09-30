@@ -3,6 +3,8 @@ import { split0th } from 'foxts/split-nth';
 import type { ReadonlyURL } from '../../utils/readonly-url';
 
 export const mirrorRegex = /^https?:\/\/(?:upos-\w+-(?!302)\w+|(?:upos|proxy)-tf-[^/]+)\.(?:bilivideo|akamaized)\.(?:com|net)\/upgcxcode/;
+/** `exp=<unix>` among the `~`-separated fields of Akamai's `hdnts` token */
+const AKAMAI_TOKEN_EXPIRY_RE = /(?:^|~)exp=(\d+)/;
 export const mCdnTfRegex = /^https?:\/\/(?:(?:\d{1,3}\.){3}\d{1,3}|[^/]+\.mcdn\.bilivideo\.(?:com|cn|net))(?::\d{1,5})?\/v\d\/resource/;
 
 const knownP2pCdnDomainPattern = createRetrieKeywordFilter([
@@ -98,12 +100,31 @@ export function classifyCdnUrl(url: ReadonlyURL): CdnUrlClass {
  */
 export type SignatureFamily = 'upos' | 'akam';
 
+/**
+ * Akamai's addresses carry its token (`hdnts`) on top of an upos `upsig`: the token tells them
+ * apart, `upsig` does not
+ */
 export function signatureFamilyOf(url: ReadonlyURL): SignatureFamily {
-  return url.searchParams.has('upsig') || !isAkamaiHost(url.hostname) ? 'upos' : 'akam';
+  const { searchParams } = url;
+  return searchParams.has('hdnts') || (!searchParams.has('upsig') && isAkamaiHost(url.hostname)) ? 'akam' : 'upos';
 }
 
-/** When the signed address expires, in unix seconds; `0` if unknown */
+/**
+ * When the signed address expires, in unix seconds; `0` if unknown. An Akamai address expires with
+ * its token (`hdnts=exp=<unix>~…`) if that comes before `deadline`: a 403 after it is an expired
+ * address, not Akamai refusing the signature family
+ */
 export function signatureDeadlineOf(url: ReadonlyURL): number {
-  const deadline = Number(url.searchParams.get('deadline'));
-  return Number.isSafeInteger(deadline) && deadline > 0 ? deadline : 0;
+  const deadline = unixSeconds(url.searchParams.get('deadline'));
+  const token = url.searchParams.get('hdnts');
+  const tokenExpiry = token === null ? 0 : unixSeconds(AKAMAI_TOKEN_EXPIRY_RE.exec(token)?.[1] ?? null);
+  if (deadline === 0 || tokenExpiry === 0) {
+    return deadline || tokenExpiry;
+  }
+  return Math.min(deadline, tokenExpiry);
+}
+
+function unixSeconds(value: string | null) {
+  const seconds = Number(value);
+  return Number.isSafeInteger(seconds) && seconds > 0 ? seconds : 0;
 }

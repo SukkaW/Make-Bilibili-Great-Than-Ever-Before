@@ -4,7 +4,7 @@ import { isCandidateUsable } from '../../core/player/candidates';
 import type { CandidateTier, MediaCandidate } from '../../core/player/candidates';
 import { MediaOutcome, MIN_RATE_SAMPLE_BYTES } from '../../core/player/host-model';
 import {
-  CRITICAL, HOST_CAP_H1, HOST_CAP_H2, HOST_CAP_H2_WARMUP,
+  HOST_CAP_H1, HOST_CAP_H2, HOST_CAP_H2_WARMUP,
   NORMAL, RELAXED, TOP_HOSTS, KiB
 } from './policy';
 import type { Attempt, AttemptRole, HostState, Job, Segment } from './types';
@@ -14,6 +14,13 @@ const p90 = p(90);
 
 /** A piece this small is about latency, not throughput: pick by expected finish time */
 const SMALL_UNIT = 256 * KiB;
+/**
+ * A primary goes only to a host expected to finish its piece within this factor of the best one:
+ * a slower host would only make the job wait for its piece. Real sessions of a viewer whose own
+ * host was the fastest got slower when pieces went to hosts up to 12x slower. Beating a per-request
+ * throttle takes more requests, not more hosts: several go to the same good host
+ */
+const ETA_BAND = 1.25;
 /** Speed samples of transfers cut short count less */
 const PARTIAL_SAMPLE_BYTES = 16 * KiB;
 
@@ -78,8 +85,8 @@ export function createHostPool(model: HostModel) {
     return list[rotation++ % list.length];
   }
 
-  /** Hosts that could take a request for this segment right now */
-  function eligible(job: Job, seg: Segment, role: AttemptRole, now: number): HostOption[] {
+  /** Hosts that could take a request for this segment right now, of `only` if given */
+  function eligible(job: Job, seg: Segment, role: AttemptRole, now: number, only: ReadonlySet<string> | null = null): HostOption[] {
     const nowSec = Date.now() / 1000;
     const names = Array.from(job.candidates.keys());
     const busyOnSegment = new Set<string>();
@@ -95,6 +102,7 @@ export function createHostPool(model: HostModel) {
         const host = getHost(hostname);
         if (
           host.active >= host.cap
+          || (only !== null && !only.has(hostname))
           || model.isCoolingDown(hostname, now)
           || model.isExcluded(hostname, job.file, now)
           || (role === 'dup' && busyOnSegment.has(hostname))
@@ -115,6 +123,18 @@ export function createHostPool(model: HostModel) {
     return options.length > 0 || seg.tried.size === 0 ? options : collect(false);
   }
 
+  function usableHostCount(job: Job) {
+    const now = performance.now();
+    const nowSec = Date.now() / 1000;
+    let count = 0;
+    for (const hostname of job.candidates.keys()) {
+      if (!model.isCoolingDown(hostname, now) && hasUsableCandidate(hostname, job, now, nowSec)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   /** Whether any of the job's URLs on this host could be used now: no side effect, unlike `pickCandidate` */
   function hasUsableCandidate(hostname: string, job: Job, now: number, nowSec: number) {
     const listed = job.candidates.get(hostname) ?? [];
@@ -126,18 +146,50 @@ export function createHostPool(model: HostModel) {
     return false;
   }
 
+  /**
+   * The hosts a piece of `bytes` may go to on its own, busy or not: the measured ones expected to
+   * finish it within `ETA_BAND` of the best, and the player's own until it is measured. On a slower
+   * host the whole request would wait for that piece, so when these are all busy it waits for a
+   * slot instead; other hosts race it, and join once measured fast. `null` when none can take it
+   */
+  function ownersOf(job: Job, bytes: number, now: number): Set<string> | null {
+    const nowSec = Date.now() / 1000;
+    const owners = new Set<string>();
+    const measured: Array<[hostname: string, eta: number]> = [];
+    let soonest = Infinity;
+    for (const hostname of job.candidates.keys()) {
+      if (model.isCoolingDown(hostname, now) || model.isExcluded(hostname, job.file, now) || !hasUsableCandidate(hostname, job, now, nowSec)) {
+        continue;
+      }
+      const estimate = model.estimate(hostname, job.file, bytes, now);
+      if (estimate.measured) {
+        measured.push([hostname, estimate.eta]);
+        soonest = Math.min(soonest, estimate.eta);
+      } else if (hostname === job.requested.hostname) {
+        owners.add(hostname);
+      }
+    }
+    for (let i = 0, len = measured.length; i < len; i++) {
+      if (measured[i][1] <= soonest * ETA_BAND) {
+        owners.add(measured[i][0]);
+      }
+    }
+    return owners.size > 0 ? owners : null;
+  }
+
   return {
     getHost,
 
     pick(job: Job, seg: Segment, role: AttemptRole): { host: HostState, candidate: MediaCandidate } | null {
       const now = performance.now();
-      const options = eligible(job, seg, role, now);
+      const bytes = seg.end - seg.frontier + 1;
+      // Duplicates race anywhere, relaxed work explores
+      const owners = role === 'dup' || job.cls === RELAXED ? null : ownersOf(job, bytes, now);
+      const options = eligible(job, seg, role, now, owners);
       if (options.length === 0) {
         return null;
       }
-      const chosen = role === 'dup'
-        ? chooseDuplicate(options, job)
-        : choosePrimary(options, job, seg.end - seg.frontier + 1);
+      const chosen = role === 'dup' ? chooseDuplicate(options, job) : choosePrimary(options, job, bytes);
       if (seg.tried.has(chosen.host.hostname)) {
         // Every usable host was tried: a new round starts with this one
         seg.tried.clear();
@@ -155,16 +207,11 @@ export function createHostPool(model: HostModel) {
     },
 
     /** Hosts that could serve the job now: not cooling down, with a URL it would accept */
-    usableHostCount(job: Job) {
-      const now = performance.now();
-      const nowSec = Date.now() / 1000;
-      let count = 0;
-      for (const hostname of job.candidates.keys()) {
-        if (!model.isCoolingDown(hostname, now) && hasUsableCandidate(hostname, job, now, nowSec)) {
-          count++;
-        }
-      }
-      return count;
+    usableHostCount,
+
+    /** Hosts a piece of `bytes` may go to on its own (`ownersOf`), else every usable one */
+    primaryHostCount(job: Job, bytes: number) {
+      return ownersOf(job, bytes, performance.now())?.size ?? usableHostCount(job);
     },
 
     measuredHostCount(job: Job) {
@@ -244,43 +291,30 @@ export function createHostPool(model: HostModel) {
 }
 
 /**
- * Primaries go to measured hosts only: the top ones by speed, none below a twelfth of the best
- * (a sixth when critical), shared out by smooth weighted round-robin. A small piece goes to
- * the host expected to finish it first. Unmeasured hosts are explored by duplicates (and
- * relaxed work), and only carry primaries while nothing is measured at all.
+ * Among the hosts that may take it (see `ownersOf`): relaxed work explores the unmeasured ones, a
+ * small piece or a job in one piece goes to the host expected to finish it first, and otherwise
+ * the fastest few share pieces by smooth weighted round-robin
  */
 function choosePrimary(options: HostOption[], job: Job, bytes: number): HostOption {
-  const measured = options.filter(option => option.estimate.measured);
-  const explore = measured.length < options.length && job.cls === RELAXED;
-  if (explore || measured.length === 0) {
-    // The tier ranks what is not measured: the least busy of the best tier
-    const unmeasured = options.filter(option => !option.estimate.measured);
-    return bestTier(unmeasured.length > 0 ? unmeasured : options).reduce((best, option) => (option.host.active < best.host.active ? option : best));
+  const unmeasured = options.filter(option => !option.estimate.measured);
+  if (unmeasured.length === options.length || (job.cls === RELAXED && unmeasured.length > 0)) {
+    return leastBusy(bestTier(unmeasured));
+  }
+  if (bytes < SMALL_UNIT || job.segments.length === 1) {
+    return options.reduce((best, option) => (option.estimate.eta < best.estimate.eta ? option : best));
   }
 
-  let top = 0;
-  for (let i = 0, len = measured.length; i < len; i++) {
-    top = Math.max(top, measured[i].estimate.rate);
-  }
-  const floor = top / (job.cls === CRITICAL ? 6 : 12);
-  const pool = measured
-    .filter(c => c.estimate.rate >= floor)
-    .sort((a, b) => b.estimate.rate - a.estimate.rate)
-    .slice(0, TOP_HOSTS);
-
-  if (bytes < SMALL_UNIT) {
-    return pool.reduce((best, c) => (c.estimate.eta < best.estimate.eta ? c : best));
-  }
-
+  const pool = options.slice().sort((a, b) => b.estimate.rate - a.estimate.rate).slice(0, TOP_HOSTS);
+  const top = pool[0].estimate.rate;
   let total = 0;
   let best = pool[0];
   for (let i = 0, len = pool.length; i < len; i++) {
-    const c = pool[i];
-    const weight = Math.max(c.estimate.rate, top * 0.05);
-    c.host.credit += weight;
+    const option = pool[i];
+    const weight = Math.max(option.estimate.rate, top * 0.05);
+    option.host.credit += weight;
     total += weight;
-    if (c.host.credit > best.host.credit) {
-      best = c;
+    if (option.host.credit > best.host.credit) {
+      best = option;
     }
   }
   best.host.credit -= total;
@@ -297,6 +331,10 @@ function chooseDuplicate(options: HostOption[], job: Job): HostOption {
     return bestTier(unmeasured).reduce((best, option) => (option.estimate.ttfb < best.estimate.ttfb ? option : best));
   }
   return options.reduce((best, option) => (option.estimate.eta < best.estimate.eta ? option : best));
+}
+
+function leastBusy(options: HostOption[]): HostOption {
+  return options.reduce((best, option) => (option.host.active < best.host.active ? option : best));
 }
 
 /** The options whose URL has the lowest tier */

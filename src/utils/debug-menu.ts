@@ -8,6 +8,16 @@ export interface DebugOption<T extends string = string> {
   values: readonly [T, ...T[]]
 }
 
+/** Queued until `initDebugMenu`, to be listed after the options */
+const commands: Array<[label: string, run: () => void]> = [];
+
+/** Debug builds only: a GM menu command that does something rather than switch a setting */
+export function registerDebugCommand(label: string, run: () => void) {
+  if (process.env.DEBUG) {
+    commands.push([label, run]);
+  }
+}
+
 export function getDebugOption<T extends string>(option: DebugOption<T>): T {
   if (!process.env.DEBUG) {
     return option.values[0];
@@ -35,5 +45,10 @@ export function initDebugMenu(options: readonly DebugOption[]) {
         // swallow
       }
     });
+  }
+
+  for (let i = 0, len = commands.length; i < len; i++) {
+    const [label, run] = commands[i];
+    GM.registerMenuCommand(`[DEBUG] ${label}`, run);
   }
 }

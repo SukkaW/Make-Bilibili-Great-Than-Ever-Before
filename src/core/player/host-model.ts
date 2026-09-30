@@ -50,7 +50,7 @@ export enum MediaOutcome {
   Unverifiable = 'unverifiable',
   /** 200: Range ignored */
   NoRange = 'no-range',
-  /** `redirect: 'manual'`: most likely off to a P2P CDN */
+  /** Redirected off to a P2P CDN */
   Redirect = 'redirect',
   /** 401 / 403 with a signature past its deadline */
   Expired = 'expired',

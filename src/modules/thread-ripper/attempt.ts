@@ -1,7 +1,7 @@
 import { noop } from 'foxts/noop';
 import { parseContentRange } from '../../core/player/range';
 import { MediaOutcome } from '../../core/player/host-model';
-import { classifyError, classifyResponse } from './classify';
+import { classifyError, classifyResponse, hostnameOf } from './classify';
 import { CRITICAL, URGENT } from './policy';
 import type { Attempt } from './types';
 
@@ -25,10 +25,13 @@ export async function runAttempt(att: Attempt, hooks: AttemptHooks): Promise<Med
       mode: 'cors',
       // What the page's XHR uses (withCredentials = false), so connections are shared with it
       credentials: 'same-origin',
-      // Keep media out of the disk cache; the CDN ignores the no-cache this implies
-      cache: 'no-store',
-      // A redirect most likely leads to a P2P CDN
-      redirect: 'manual',
+      // Like the page's XHR. `no-store` would add `Cache-Control: no-cache` and `Pragma: no-cache`,
+      // which upos hosts ignore but Akamai may honour by going upstream
+      cache: 'default',
+      // Like the page's XHR. A redirect is not necessarily a P2P CDN: Akamai may send to an edge,
+      // an extension may clean the URL (AdGuard's 307). One landing on a P2P CDN is refused
+      // (`classifyResponse`)
+      redirect: 'follow',
       referrerPolicy: 'strict-origin-when-cross-origin',
       priority: job.cls === CRITICAL || job.cls === URGENT ? 'high' : 'auto',
       signal: att.controller.signal
@@ -38,6 +41,9 @@ export async function runAttempt(att: Attempt, hooks: AttemptHooks): Promise<Med
   }
 
   att.headersAt = performance.now();
+  if (response.redirected) {
+    att.redirectedTo = hostnameOf(response.url);
+  }
 
   const contentLength = Number(response.headers.get('content-length'));
   const verdict = classifyResponse(

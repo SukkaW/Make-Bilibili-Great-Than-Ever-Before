@@ -48,6 +48,7 @@ export function createJob(params: {
     committed: false,
     total: params.total,
     covered: 0,
+    fetched: 0,
     lastProgressAt: now,
     hostsUsed: new Set()
   };
