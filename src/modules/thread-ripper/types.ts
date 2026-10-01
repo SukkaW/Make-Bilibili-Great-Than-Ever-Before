@@ -2,23 +2,15 @@ import type { MediaCandidate } from '../../core/player/candidates';
 import type { HostTimeouts } from '../../core/player/host-model';
 import type { ByteRange } from '../../core/player/range';
 import type { MediaFile, MediaKind } from '../../core/player/registry';
-import type { SyntheticXhrSink } from '../../types';
+import type { SyntheticXhrSink } from '../../utils/xhr-override';
 import type { AbortReason } from './classify';
 import type { UrgencyClass } from './policy';
 
 /** A host's slots: what is known about it lives in the shared host model */
 export interface HostState {
   readonly hostname: string,
-  /** Lower cap: one connection per request, and Chrome opens at most 6 per host */
-  readonly http1: boolean,
-  /** Attempts in flight on this host */
+  /** Attempts in flight on this host, at most `HOST_CAP` */
   active: number,
-  /** Max attempts in flight: AIMD, +1 per success after the first 3, halved on 412 / 429 / 503 */
-  cap: number,
-  /** Successful attempts, the cap only grows after the first few */
-  successes: number,
-  /** The cap does not grow within 10 s of a throttle */
-  lastThrottleAt: number,
   /** Smooth weighted round-robin credit */
   credit: number
 }
@@ -101,12 +93,15 @@ export interface Job {
   /** The initialization segment or the index: nothing plays without them */
   readonly header: boolean,
   /** Fetched ahead of the player: `current` is what it will ask for first */
-  readonly warmup: 'current' | 'other' | null,
+  /** Fetched ahead of the player into the header cache: nobody waits on it until the player asks */
+  readonly warmup: boolean,
   /** Set when the job starts, see `setUrgency` in the engine */
   cls: UrgencyClass,
   /** When its bytes are wanted (performance.now() time): past its start by how urgent it is */
   deadline: number,
   readonly createdAt: number,
+  /** The player's own XHR timeout, ms, `0` for none */
+  readonly timeout: number,
   /** Rescue budget: help for pieces that miss their deadline although on pace */
   readonly rescue: { straggler: number, stale: number },
   /** Every acceptable URL of the file, by host */
@@ -120,7 +115,10 @@ export interface Job {
   /** The pieces `range` is split into, in order */
   readonly segments: Segment[],
   /** The synthetic XHR response this job drives */
-  readonly sink: SyntheticXhrSink,
+  /** The player's request it answers, `null` for a warm-up */
+  readonly sink: SyntheticXhrSink | null,
+  /** From the first valid response: the warm-up's copy is served with it */
+  contentType: string,
   state: 'running' | 'done' | 'failed',
   /** Headers were handed to the page: falling back to a native request is no longer possible */
   committed: boolean,
@@ -132,6 +130,14 @@ export interface Job {
   fetched: number,
   /** Last time new bytes were written: stuck too long, unfinished pieces go to the player's own URL */
   lastProgressAt: number,
+  /** What the stream needs, bytes per ms: the file's bitrate from the playinfo */
+  readonly requiredRate: number,
+  /** Recent (time, covered) samples: the delivered rate is read from them */
+  readonly meter: Array<[time: number, covered: number]>,
+  /** The last duplicate added for a slow piece: when, and the delivered rate then */
+  lastDuplicate: { at: number, rate: number } | null,
+  /** A duplicate did not raise the delivered rate: the line is full, no more of them */
+  saturated: boolean,
   /** Distinct hosts that delivered bytes, for the debug log */
   readonly hostsUsed: Set<string>
 }

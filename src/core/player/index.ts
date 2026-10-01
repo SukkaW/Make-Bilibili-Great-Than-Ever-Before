@@ -32,9 +32,6 @@ import type { MakeBilibiliGreatThanEverBeforeHook, XhrResponder, XhrSendContext 
 import { isKnownNonVideoUrl } from './cdn-classify';
 import { defaultCandidate, findCandidate, isCandidateUsable, mediaCandidates } from './candidates';
 import type { MediaCandidate } from './candidates';
-import { createDebugPassthroughPhase } from './debug-passthrough';
-import { getDebugOption } from '../../utils/debug-menu';
-import { mediaXhrMode } from '../../debug-options';
 import { createHostModel } from './host-model';
 import { createPlaybackMetrics } from './metrics';
 import type { PlaybackMetrics } from './metrics';
@@ -123,11 +120,7 @@ export function createPlayerInterceptor(hook: PlayerInterceptorHooks): PlayerInt
   const servePhases: MediaServePhase[] = [];
 
   const metrics = process.env.DEBUG
-    ? createPlaybackMetrics(() => {
-      const names = [...policyPhases, ...servePhases].map(phase => phase.name).join('+');
-      const mode = getDebugOption(mediaXhrMode);
-      return mode === 'default' ? names : `${names} (${mode})`;
-    })
+    ? createPlaybackMetrics(() => [...policyPhases, ...servePhases].map(phase => phase.name).join('+'))
     : null;
 
   /**
@@ -358,10 +351,6 @@ export function createPlayerInterceptor(hook: PlayerInterceptorHooks): PlayerInt
       }
     }
   };
-
-  if (process.env.DEBUG && getDebugOption(mediaXhrMode) === 'passthrough') {
-    interceptor.registerPhase(createDebugPassthroughPhase(hook.nativeFetch));
-  }
 
   if (process.env.DEBUG) {
     Object.defineProperty(unsafeWindow, '__MBGTEB_PLAYER_INTERCEPTOR__', {

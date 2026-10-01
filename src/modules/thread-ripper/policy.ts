@@ -13,16 +13,14 @@ export const MiB = 1024 * KiB;
 export const GLOBAL_CAP = 32;
 /** Slots only critical / urgent work may take */
 export const URGENT_RESERVE = 2;
-/** Per host: HTTP/2 multiplexes on one connection, the CDN throttles per request */
-export const HOST_CAP_H2 = 6;
-/** Until a host has proven itself */
-export const HOST_CAP_H2_WARMUP = 4;
 /**
- * Over HTTP/1.1 every request needs its own connection and Chrome opens at most 6 per host, shared
- * with the player's own requests: anything beyond waits inside the browser, and that wait would be
- * mistaken for a slow first byte
+ * Attempts in flight per host, every host alike: Chrome opens at most six connections to one host,
+ * and a seventh would wait inside the browser and read as a slow first byte. The CDN throttles per
+ * request, so several requests to one good host add up
  */
-export const HOST_CAP_H1 = 4;
+export const HOST_CAP = 6;
+/** Pieces planned per host that may carry them on its own */
+export const PIECES_PER_HOST = 4;
 /** Primaries only go to the best hosts */
 export const TOP_HOSTS = 6;
 
@@ -33,12 +31,18 @@ export const MAX_SERVED_LENGTH = 64 * MiB;
 export const MAX_TRIES_PER_SEGMENT = 6;
 
 export const TTFB_HARD_MS = 2400;
-export const STALL_HARD_MS = 1200;
-export const HTTP1_TIMEOUT_FACTOR = 1.5;
 /** No validated 206 from any host by then: give the request back to the browser */
 export const COMMIT_TIMEOUT_MS = clamp(2 * TTFB_HARD_MS, 2000, 5000);
 /** Committed, but no byte arrived for this long */
 export const JOB_STALL_MS = 8000;
+/**
+ * A job delivering this many times the stream's bitrate gets no more speculative duplicates. High
+ * on purpose: on a fat line a racer is cheap and buys latency; a saturated line shows itself when
+ * a duplicate raises nothing (`mayDuplicate`), whatever the multiple
+ */
+export const HEDGE_HEADROOM = 8;
+/** The delivered rate is read over this long */
+export const RATE_WINDOW_MS = 500;
 export const TICK_MS = 50;
 
 /** Urgency classes, most urgent first */
@@ -59,7 +63,7 @@ export function planPieceCount(length: number, rate: number, ttfb: number, usabl
   }
   const targetMs = clamp(4 * ttfb, 600, 1500);
   const pieceSize = clamp(rate * targetMs, MIN_PIECE, MAX_PIECE);
-  const cap = Math.max(1, Math.min(MAX_PIECES, usableHosts * HOST_CAP_H2_WARMUP));
+  const cap = Math.max(1, Math.min(MAX_PIECES, usableHosts * PIECES_PER_HOST));
   return clamp(Math.ceil(length / pieceSize), 1, cap);
 }
 

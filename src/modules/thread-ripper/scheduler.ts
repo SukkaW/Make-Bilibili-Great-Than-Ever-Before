@@ -22,7 +22,9 @@ export interface SchedulerHooks {
   onAttemptEnd(this: void, att: Attempt, outcome: MediaOutcome): void,
   /** Every tick while there is work: urgency, hedging, the endgame */
   onTick(this: void, now: number, idle: boolean): void,
-  hasWork(this: void): boolean
+  hasWork(this: void): boolean,
+  /** Debug builds: an attempt started */
+  onLaunch(this: void, att: Attempt): void
 }
 
 let attemptSequence = 0;
@@ -64,7 +66,11 @@ export function createScheduler(pool: HostPool, model: HostModel, hooks: Schedul
     }
   }
 
-  /** A hard timeout only kills an attempt when something else can take over */
+  /**
+   * A hard timeout only kills an attempt when another host can take over. When none can (every
+   * other host is cooling down), the request is left alone: killing it would only hand the piece to
+   * whatever racer is on it, and that racer is there because it was the worse choice
+   */
   function canGiveUp(att: Attempt, now: number) {
     return att.seg.attempts.size > 1
       || pool.bestAlternative(att.job, att.seg) !== null
@@ -136,6 +142,7 @@ export function createScheduler(pool: HostPool, model: HostModel, hooks: Schedul
       seg.extra++;
     }
     ensureTick();
+    hooks.onLaunch(att);
 
     void runAndFinish(att);
   }

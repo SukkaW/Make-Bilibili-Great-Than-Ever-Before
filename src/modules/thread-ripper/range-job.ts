@@ -1,10 +1,10 @@
 import type { ByteRange } from '../../core/player/range';
 import { byteRangeLength } from '../../core/player/range';
 import type { MediaFile } from '../../core/player/registry';
-import type { SyntheticXhrSink } from '../../types';
 import type { UrgencyClass } from './policy';
-import { splitEvenly } from './policy';
+import { RATE_WINDOW_MS, splitEvenly } from './policy';
 import type { MediaCandidate } from '../../core/player/candidates';
+import type { SyntheticXhrSink } from '../../utils/xhr-override';
 import type { Attempt, Job, Segment } from './types';
 
 let jobSequence = 0;
@@ -14,12 +14,13 @@ export function createJob(params: {
   pathname: string,
   range: ByteRange,
   header: boolean,
-  warmup: 'current' | 'other' | null,
+  warmup: boolean,
   cls: UrgencyClass,
+  timeout: number,
   candidates: readonly MediaCandidate[],
   requested: MediaCandidate,
   total: number | null,
-  sink: SyntheticXhrSink
+  sink: SyntheticXhrSink | null
 }): Job {
   const length = byteRangeLength(params.range);
   // Handed to the page as the XHR response: allocate it in the page's realm
@@ -37,6 +38,7 @@ export function createJob(params: {
     cls: params.cls,
     deadline: now,
     createdAt: now,
+    timeout: params.timeout,
     rescue: { straggler: 1, stale: 1 },
     candidates: byHost(params.candidates),
     requested: params.requested,
@@ -44,12 +46,18 @@ export function createJob(params: {
     bytes: new unsafeWindow.Uint8Array(buffer),
     segments: [],
     sink: params.sink,
+    contentType: '',
     state: 'running',
     committed: false,
     total: params.total,
     covered: 0,
     fetched: 0,
     lastProgressAt: now,
+    // Bits per second to bytes per millisecond
+    requiredRate: params.file.bandwidth / 8000,
+    meter: [[now, 0]],
+    lastDuplicate: null,
+    saturated: false,
     hostsUsed: new Set()
   };
 }
@@ -96,6 +104,19 @@ export function splitSegment(job: Job, seg: Segment, splitAt: number): Segment {
   seg.end = splitAt - 1;
   job.segments.push(tail);
   return tail;
+}
+
+/** Bytes written for the job over the last `RATE_WINDOW_MS`, per ms: what the job delivers now */
+export function deliveredRate(job: Job, now: number) {
+  const { meter } = job;
+  let base = meter[0];
+  for (let i = 1, len = meter.length; i < len; i++) {
+    if (meter[i][0] > now - RATE_WINDOW_MS) {
+      break;
+    }
+    base = meter[i];
+  }
+  return (job.covered - base[1]) / Math.max(1, now - base[0]);
 }
 
 export function isSegmentComplete(seg: Segment) {
@@ -148,8 +169,19 @@ export function writeChunk(job: Job, att: Attempt, chunk: Uint8Array): { result:
     job.bytes.set(fresh, seg.frontier - base);
     job.covered += fresh.byteLength;
     seg.frontier = pos + usable;
-    job.lastProgressAt = performance.now();
+    const now = performance.now();
+    job.lastProgressAt = now;
     seg.tried.clear();
+    // One sample at or before the window's start stays, see `deliveredRate`
+    const { meter } = job;
+    meter.push([now, job.covered]);
+    let stale = 0;
+    while (stale < meter.length - 1 && meter[stale + 1][0] <= now - RATE_WINDOW_MS) {
+      stale++;
+    }
+    if (stale > 0) {
+      meter.splice(0, stale);
+    }
   } else {
     waste = chunk.byteLength;
   }

@@ -12,15 +12,14 @@ import removeBlackBackdropFilter from './modules/remove-black-backdrop-filter';
 import removeUselessUrlParams from './modules/remove-useless-url-params';
 import threadRipper from './modules/thread-ripper';
 import useSystemFonts from './modules/use-system-fonts';
-import type { FetchArgs, OnXhrOpenHook, OnXhrSendHook, MakeBilibiliGreatThanEverBeforeHook, MakeBilibiliGreatThanEverBeforeModule, OnBeforeFetchHook } from './types';
+import type { FetchArgs, MakeBilibiliGreatThanEverBeforeHook, MakeBilibiliGreatThanEverBeforeModule, OnBeforeFetchHook } from './types';
 import disableAV1 from './modules/disable-av1';
 import defuseStorage from './modules/defuse-storage';
 import forceEnable4K from './modules/force-enable-4k';
 import { initModuleMenu } from './utils/module-menu';
 import { initDebugMenu } from './utils/debug-menu';
-import { debugOptions } from './debug-options';
 import { createPlayerInterceptor } from './core/player';
-import { createPatchedXhrClass } from './utils/xhr-override';
+import { PatchedXMLHttpRequest, xhrHooks } from './utils/xhr-override';
 import { disguiseAsNative } from './utils/fake-native-function';
 
 declare global {
@@ -57,10 +56,6 @@ declare global {
   const styles: string[] = [];
   const onBeforeFetchHooks = new Set<OnBeforeFetchHook>();
   const onResponseHooks = new Set<(response: Response, finalFetchArgs: FetchArgs, $fetch: typeof fetch) => Response | Promise<Response>>();
-  const onXhrOpenHooks = new Set<OnXhrOpenHook>();
-  const onAfterXhrOpenHooks = new Set<(xhr: XMLHttpRequest) => void>();
-  const onXhrResponseHooks = new Set<(method: string, url: string | URL, response: unknown, xhr: XMLHttpRequest) => unknown>();
-  const onXhrSendHooks = new Set<OnXhrSendHook>();
 
   /** Captured before fetch gets overridden below */
   const nativeFetch: typeof fetch = unsafeWindow.fetch.bind(unsafeWindow);
@@ -85,16 +80,16 @@ declare global {
       onResponseHooks.add(cb);
     },
     onXhrOpen(cb) {
-      onXhrOpenHooks.add(cb);
+      xhrHooks.open.add(cb);
     },
     onAfterXhrOpen(cb) {
-      onAfterXhrOpenHooks.add(cb);
+      xhrHooks.afterOpen.add(cb);
     },
     onXhrResponse(cb) {
-      onXhrResponseHooks.add(cb);
+      xhrHooks.response.add(cb);
     },
     onXhrSend(cb) {
-      onXhrSendHooks.add(cb);
+      xhrHooks.send.add(cb);
     },
     onlyCallOnce,
     nativeFetch
@@ -171,7 +166,7 @@ declare global {
   }
 
   // Debug builds only, listed after the modules
-  initDebugMenu(debugOptions);
+  initDebugMenu();
 
   // Add Style
   const sheet = new CSSStyleSheet();
@@ -221,13 +216,5 @@ declare global {
   // eslint-disable-next-line @typescript-eslint/unbound-method -- cache original method
   })(unsafeWindow.fetch);
 
-  unsafeWindow.XMLHttpRequest = createPatchedXhrClass(
-    unsafeWindow.XMLHttpRequest,
-    {
-      open: onXhrOpenHooks,
-      afterOpen: onAfterXhrOpenHooks,
-      response: onXhrResponseHooks,
-      send: onXhrSendHooks
-    }
-  );
+  unsafeWindow.XMLHttpRequest = PatchedXMLHttpRequest;
 })(unsafeWindow);

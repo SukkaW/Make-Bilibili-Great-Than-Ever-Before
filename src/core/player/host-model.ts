@@ -27,7 +27,6 @@ import flru from 'flru';
 import { p50 } from 'fast-percentile';
 import { logger } from '../../logger';
 import type { SignatureFamily } from './cdn-classify';
-import { isAkamaiHost } from './cdn-classify';
 import type { MediaKind } from './registry';
 import { WindowStats, WorseWhen } from './window-stats';
 
@@ -182,8 +181,6 @@ interface PageStats {
 /** Everything known about one host's reliability, for this page. Times are performance.now() ms */
 interface HostRecord {
   readonly hostname: string,
-  /** One connection per request, at most 6 per host in Chrome (see `HOST_CAP_H1`) */
-  readonly http1: boolean,
   /** Last request that ended: after `WARM_CONNECTION_MS` idle, the connection is assumed closed */
   lastUsedAt: number,
   /** No new requests to the host until then */
@@ -235,9 +232,6 @@ const SESSION = Infinity;
 const OUTAGE_HOSTS = 2;
 const OUTAGE_WINDOW_MS = 3000;
 
-/** Not a speed signal: only the browser's connection pool differs, see `HOST_CAP_H1` */
-const HTTP1_HOSTS = new Set(['upos-sz-estgoss.bilivideo.com']);
-
 /** Failures that the viewer's own network going away produces on every host at once */
 const CONNECTION_FAILURES = new Set<MediaOutcome>([
   MediaOutcome.ConnectFail,
@@ -252,7 +246,7 @@ export type HostModel = ReturnType<typeof createHostModel>;
 
 /**
  * Nothing here outlives the page: performance knowledge is per video, reliability per page. Even a
- * connection failure may be the viewer's Wi-Fi rather than the host, see `isOutage`.
+ * connection failure may be the viewer's Wi-Fi rather than the host, see `checkOutage`.
  */
 export function createHostModel() {
   const hosts = new Map<string, HostRecord>();
@@ -282,7 +276,6 @@ export function createHostModel() {
     if (host === undefined) {
       host = {
         hostname,
-        http1: HTTP1_HOSTS.has(hostname) || isAkamaiHost(hostname),
         // Never: `performance.now()` starts near 0, where `0` would read as "just now"
         lastUsedAt: -Infinity,
         cooldownUntil: 0,
@@ -492,14 +485,9 @@ export function createHostModel() {
   }
 
   return {
-    isHttp1: (hostname: string) => get(hostname).http1,
-
     isCold: (hostname: string, now: number) => isCold(get(hostname), now),
 
     isCoolingDown: (hostname: string, now: number) => get(hostname).cooldownUntil > now,
-
-    /** The viewer's network is down: nothing a CDN host can do about it */
-    isOutage: () => outageSince !== null,
 
     /** Bytes arrived from some host: the network works */
     noteBytes,
@@ -603,14 +591,18 @@ export function createHostModel() {
       }
     },
 
-    recordOutcome(hostname: string, file: MediaFileRef, address: MediaAddressRef | null, outcome: MediaOutcome, now: number) {
+    /**
+     * @param alive other requests to the host are delivering right now: a connection-level failure
+     * is then one bad connection, and the host stays available for the retry
+     */
+    recordOutcome(hostname: string, file: MediaFileRef, address: MediaAddressRef | null, outcome: MediaOutcome, now: number, alive = false) {
       const host = get(hostname);
       host.lastUsedAt = Math.max(host.lastUsedAt, now);
 
       const connectionFailure = CONNECTION_FAILURES.has(outcome);
       if (connectionFailure) {
-        if (outageSince !== null) {
-          // The viewer's network is down: not this host's fault
+        if (outageSince !== null || alive) {
+          // The viewer's network is down, or just this connection: not this host's fault
           return;
         }
         recentFailures.push({ at: now, host, cooldownUntil: host.cooldownUntil, failureStreak: host.failureStreak });
@@ -709,7 +701,6 @@ export function createHostModel() {
         const abs = stats?.rate.estimate(now) ?? null;
         return {
           hostname: host.hostname,
-          http1: host.http1,
           ttfbVsPeers: ttfb === null ? null : Math.round(ttfb * 100) / 100,
           rateVsPeers: rate === null ? null : Math.round(rate * 100) / 100,
           rateKiBps: abs === null ? null : Math.round(abs * 1000 / KiB),

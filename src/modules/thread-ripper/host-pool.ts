@@ -1,12 +1,9 @@
 import { p } from 'fast-percentile';
 import type { HostEstimate, HostModel } from '../../core/player/host-model';
-import { isCandidateUsable } from '../../core/player/candidates';
-import type { CandidateTier, MediaCandidate } from '../../core/player/candidates';
+import { CandidateTier, isCandidateUsable } from '../../core/player/candidates';
+import type { MediaCandidate } from '../../core/player/candidates';
 import { MediaOutcome, MIN_RATE_SAMPLE_BYTES } from '../../core/player/host-model';
-import {
-  HOST_CAP_H1, HOST_CAP_H2, HOST_CAP_H2_WARMUP,
-  NORMAL, RELAXED, TOP_HOSTS, KiB
-} from './policy';
+import { HOST_CAP, NORMAL, RELAXED, TOP_HOSTS, KiB } from './policy';
 import type { Attempt, AttemptRole, HostState, Job, Segment } from './types';
 
 /** The gaps between an attempt's chunks are reported as their 90th percentile */
@@ -44,17 +41,7 @@ export function createHostPool(model: HostModel) {
   function getHost(hostname: string): HostState {
     let host = slots.get(hostname);
     if (host === undefined) {
-      const http1 = model.isHttp1(hostname);
-      host = {
-        hostname,
-        http1,
-        active: 0,
-        cap: http1 ? HOST_CAP_H1 : HOST_CAP_H2_WARMUP,
-        successes: 0,
-        // Never: `performance.now()` starts near 0, where `0` would read as "just now"
-        lastThrottleAt: -Infinity,
-        credit: 0
-      };
+      host = { hostname, active: 0, credit: 0 };
       slots.set(hostname, host);
     }
     return host;
@@ -101,7 +88,7 @@ export function createHostPool(model: HostModel) {
         const hostname = names[i];
         const host = getHost(hostname);
         if (
-          host.active >= host.cap
+          host.active >= HOST_CAP
           || (only !== null && !only.has(hostname))
           || model.isCoolingDown(hostname, now)
           || model.isExcluded(hostname, job.file, now)
@@ -214,35 +201,13 @@ export function createHostPool(model: HostModel) {
       return ownersOf(job, bytes, performance.now())?.size ?? usableHostCount(job);
     },
 
-    measuredHostCount(job: Job) {
-      const now = performance.now();
-      const names = Array.from(job.candidates.keys());
-      let count = 0;
-      for (let i = 0, len = names.length; i < len; i++) {
-        if (model.estimate(names[i], job.file, 1, now).measured) {
-          count++;
-        }
-      }
-      return count;
-    },
-
     /** Caps here, knowledge into the host model */
     apply(att: Attempt, outcome: MediaOutcome) {
       const { host, candidate, job } = att;
       const now = performance.now();
 
-      model.recordOutcome(host.hostname, job.file, candidate, outcome, now);
-
-      if (outcome === MediaOutcome.Ok) {
-        host.successes++;
-        const maxCap = host.http1 ? HOST_CAP_H1 : HOST_CAP_H2;
-        if (host.cap < maxCap && host.successes >= 3 && now - host.lastThrottleAt > 10 * 1000) {
-          host.cap++;
-        }
-      } else if (outcome === MediaOutcome.Throttled || outcome === MediaOutcome.Overloaded) {
-        host.cap = Math.max(1, host.cap >> 1);
-        host.lastThrottleAt = now;
-      }
+      // Other requests still flowing on the host: a failure was this connection's, not the host's
+      model.recordOutcome(host.hostname, job.file, candidate, outcome, now, host.active > 0);
 
       // What the attempt says about the host's speed, even when cut short
       const received = att.bytes - att.firstChunkBytes;
@@ -280,12 +245,7 @@ export function createHostPool(model: HostModel) {
     },
 
     snapshot() {
-      return Array.from(slots.values(), host => ({
-        hostname: host.hostname,
-        active: host.active,
-        cap: host.cap,
-        successes: host.successes
-      }));
+      return Array.from(slots.values(), host => ({ hostname: host.hostname, active: host.active }));
     }
   };
 }
@@ -298,7 +258,7 @@ export function createHostPool(model: HostModel) {
 function choosePrimary(options: HostOption[], job: Job, bytes: number): HostOption {
   const unmeasured = options.filter(option => !option.estimate.measured);
   if (unmeasured.length === options.length || (job.cls === RELAXED && unmeasured.length > 0)) {
-    return leastBusy(bestTier(unmeasured));
+    return leastBusy(preferred(unmeasured));
   }
   if (bytes < SMALL_UNIT || job.segments.length === 1) {
     return options.reduce((best, option) => (option.estimate.eta < best.estimate.eta ? option : best));
@@ -328,7 +288,7 @@ function choosePrimary(options: HostOption[], job: Job, bytes: number): HostOpti
 function chooseDuplicate(options: HostOption[], job: Job): HostOption {
   const unmeasured = options.filter(option => !option.estimate.measured);
   if (unmeasured.length > 0 && job.cls >= NORMAL) {
-    return bestTier(unmeasured).reduce((best, option) => (option.estimate.ttfb < best.estimate.ttfb ? option : best));
+    return preferred(unmeasured).reduce((best, option) => (option.estimate.ttfb < best.estimate.ttfb ? option : best));
   }
   return options.reduce((best, option) => (option.estimate.eta < best.estimate.eta ? option : best));
 }
@@ -337,13 +297,18 @@ function leastBusy(options: HostOption[]): HostOption {
   return options.reduce((best, option) => (option.host.active < best.host.active ? option : best));
 }
 
-/** The options whose URL has the lowest tier */
-function bestTier(options: HostOption[]): HostOption[] {
-  let best: CandidateTier | null = null;
-  for (let i = 0, len = options.length; i < len; i++) {
-    if (best === null || options[i].candidate.tier < best) {
-      best = options[i].candidate.tier;
-    }
+/**
+ * Among hosts nothing is measured on yet: the addresses Bilibili issued for this file first (its
+ * assignment for this viewer carries information: when only the assigned hosts are good, the
+ * moved signatures are 13 ways to wait), then the signatures moved onto other hosts, and last the
+ * last resorts (a signature on a host not known to accept it, a proxy, a P2P host). Mirror and
+ * bcache hosts are peers at every step; which is faster is found out, never assumed
+ */
+function preferred(options: HostOption[]): HostOption[] {
+  const listed = options.filter(option => option.candidate.tier <= CandidateTier.ListedBcache);
+  if (listed.length > 0) {
+    return listed;
   }
-  return options.filter(option => option.candidate.tier === best);
+  const moved = options.filter(option => option.candidate.tier <= CandidateTier.Bcache);
+  return moved.length > 0 ? moved : options;
 }

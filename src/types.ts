@@ -1,3 +1,4 @@
+import type { SyntheticXhrSink } from './utils/xhr-override';
 import type { PlayerInterceptor } from './core/player';
 
 export interface MakeBilibiliGreatThanEverBeforeModule {
@@ -57,31 +58,7 @@ export interface XhrSendContext {
   readonly timeout: number
 }
 
-/**
- * Drives a synthetic XHR response. The XHR emulation follows the XHR spec: every call here turns
- * into the matching readyState changes and events.
- */
-export interface SyntheticXhrSink {
-  /** Aborted when the page calls `abort()`, re-opens the XHR, or its `timeout` elapses. */
-  readonly signal: AbortSignal,
-  /**
-   * Commit point: the response exists from now on, `fallbackToNative()` is no longer possible.
-   *
-   * @param statusText `''` over HTTP/2, which has no reason phrase
-   */
-  headersReceived(this: void, status: number, headers: ReadonlyArray<readonly [name: string, value: string]>, statusText?: string): void,
-  progress(this: void, loaded: number, total: number): void,
-  done(this: void, body: ArrayBuffer): void,
-  error(this: void): void,
-  /**
-   * Hand the request back to the browser (native `send()`). Only possible before `headersReceived()`.
-   *
-   * @returns `false` if it is too late to fall back
-   */
-  fallbackToNative(this: void): boolean
-}
-
-export type XhrResponder = (sink: SyntheticXhrSink) => void;
+export type XhrResponder = (response: SyntheticXhrSink) => void;
 /**
  * Return a responder to answer the request with a synthetic response, or `null` to let the
  * browser send it. Only `responseType === 'arraybuffer'` requests can be answered.

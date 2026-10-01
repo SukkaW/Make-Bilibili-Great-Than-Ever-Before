@@ -1,8 +1,5 @@
 import type { MakeBilibiliGreatThanEverBeforeModule } from '../types';
 import { createThreadRipper } from './thread-ripper/engine';
-import type { ThreadRipperMode } from './thread-ripper/engine';
-import { getDebugOption } from '../utils/debug-menu';
-import { mediaXhrMode, threadRipperAb } from '../debug-options';
 
 const threadRipper: MakeBilibiliGreatThanEverBeforeModule = {
   name: 'thread-ripper',
@@ -14,10 +11,7 @@ const threadRipper: MakeBilibiliGreatThanEverBeforeModule = {
       return;
     }
 
-    const mode: ThreadRipperMode = process.env.DEBUG && getDebugOption(mediaXhrMode) === 'shadow' ? 'shadow' : 'serve';
-    const ab = process.env.DEBUG ? getDebugOption(threadRipperAb) === 'random' : false;
-
-    player.registerPhase(createThreadRipper(player, nativeFetch, mode, ab));
+    player.registerPhase(createThreadRipper(player, nativeFetch));
   }
 };
 

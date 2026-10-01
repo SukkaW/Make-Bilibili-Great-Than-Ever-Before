@@ -5,28 +5,27 @@ import { p50 } from 'fast-percentile';
 import { logger } from '../../logger';
 import type { MediaServePhase, MediaXhrRequest, PlayerInterceptor } from '../../core/player';
 import type { ByteRange } from '../../core/player/range';
-import { byteRangeLength, parseContentRange } from '../../core/player/range';
+import { byteRangeLength } from '../../core/player/range';
 import type { MediaFile } from '../../core/player/registry';
-import type { SyntheticXhrSink, XhrResponder } from '../../types';
+import type { XhrResponder } from '../../types';
 import { runAttempt } from './attempt';
 import { MediaOutcome, MIN_RATE_SAMPLE_BYTES } from '../../core/player/host-model';
 import { isRetryable } from './classify';
 import { createHeaderCache } from './header-cache';
 import type { CachedHeader } from './header-cache';
-import { STEAL_MIN, decideHelp, hedgeSlack, recentRate, splitPoint } from './hedge';
+import { STEAL_MIN, URGENCY_FACTOR, decideHelp, hedgeSlack, recentRate, splitPoint } from './hedge';
 import { createHostPool } from './host-pool';
 import {
-  COMMIT_TIMEOUT_MS, CRITICAL, JOB_STALL_MS, KiB, MAX_SERVED_LENGTH, MAX_TRIES_PER_SEGMENT, MiB,
-  RELAXED, URGENT, planPieceCount
+  COMMIT_TIMEOUT_MS, CRITICAL, HEDGE_HEADROOM, JOB_STALL_MS, KiB, MAX_SERVED_LENGTH, MAX_TRIES_PER_SEGMENT,
+  MiB, RATE_WINDOW_MS, RELAXED, URGENT, planPieceCount
 } from './policy';
-import { createJob, isJobComplete, isSegmentComplete, planSegments, splitSegment, writeChunk } from './range-job';
+import { createJob, deliveredRate, isJobComplete, isSegmentComplete, planSegments, splitSegment, writeChunk } from './range-job';
 import { createScheduler } from './scheduler';
 import { defaultCandidate } from '../../core/player/candidates';
 import type { MediaCandidate } from '../../core/player/candidates';
+import type { SyntheticXhrSink } from '../../utils/xhr-override';
 import type { Attempt, Job, Segment } from './types';
-import { planWarmup } from './warmup';
-
-export type ThreadRipperMode = 'serve' | 'shadow';
+import { warmupFiles } from './warmup';
 
 /** After a failed job, the player's retry of the same range goes to the browser */
 const NATIVE_RETRY_MS = 30 * 1000;
@@ -48,7 +47,9 @@ interface JobParams {
   pathname: string,
   range: ByteRange,
   header: boolean,
-  warmup: 'current' | 'other' | null,
+  warmup: boolean,
+  /** The player's own XHR timeout, `0` for none: the clock for handing a request back before commit */
+  timeout: number,
   /** Every acceptable URL of the file */
   candidates: readonly MediaCandidate[],
   requested: MediaCandidate
@@ -71,14 +72,13 @@ interface JobSummary {
  * The serve phase: a media range the player asks for is split into pieces, fetched from many
  * interchangeable CDN hosts at once, checked, and put together as the XHR's response.
  */
-/**
- * @param ab debug builds: each video gets thread-ripper or not on a coin flip (`threadRipperAb`)
- */
-export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: typeof fetch, mode: ThreadRipperMode, ab = false): MediaServePhase {
+export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: typeof fetch): MediaServePhase {
   const model = interceptor.hosts;
   const pool = createHostPool(model);
   const headers = createHeaderCache();
   const jobs = new Set<Job>();
+  /** file key -> its warm-up job, while it runs */
+  const warmups = new Map<string, Job>();
   /** file key -> file size, as every host must agree on it */
   const totals = new Map<string, number>();
   const nativeRetry = new Map<string, number>();
@@ -93,24 +93,16 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
     run: att => runAttempt(att, { nativeFetch, onValidResponse, onChunk }),
     onAttemptEnd,
     onTick,
-    hasWork: () => jobs.size > 0
+    hasWork: () => jobs.size > 0,
+    onLaunch: process.env.DEBUG
+      ? (att) => {
+        // Only what follows a failure: every launch would flood the startup trace
+        if (att.seg.tries > 0 || att.role === 'final') {
+          debugNote(att.job.file, `#${att.job.id} piece ${att.seg.index} ${att.role} -> ${att.host.hostname} (${att.rangeStart}-${att.rangeEnd}, ${att.seg.attempts.size} on it)`);
+        }
+      }
+      : noop
   });
-
-  /** Debug A/B: whether each video (`videoKey`) gets thread-ripper, a coin flip at first sight */
-  const arms = new Map<string, boolean>();
-
-  function isOn(file: MediaFile) {
-    if (!ab) {
-      return true;
-    }
-    let on = arms.get(file.videoKey);
-    if (on === undefined) {
-      on = Math.random() < 0.5;
-      arms.set(file.videoKey, on);
-      interceptor.metrics?.setArm(file, on ? 'A/B: on' : 'A/B: off');
-    }
-    return on;
-  }
 
   /** Debug builds: what thread-ripper does, in the console and in the video's startup trace (`metrics.ts`) */
   function debugNote(file: MediaFile | null, text: string) {
@@ -122,7 +114,9 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
 
   /** Leave a media XHR to the browser, saying why in debug builds */
   function declined(reason: string, request: MediaXhrRequest): null {
-    debugNote(request.match?.file ?? null, `left to the browser: ${reason} (${request.ctx.url})`);
+    if (process.env.DEBUG) {
+      debugNote(request.match?.file ?? null, `left to the browser: ${reason} (${request.ctx.url})`);
+    }
     return null;
   }
 
@@ -151,6 +145,9 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
   function stop(job: Job, result: JobSummary['result']) {
     job.state = result === 'done' ? 'done' : 'failed';
     jobs.delete(job);
+    if (warmups.get(job.file.key) === job) {
+      warmups.delete(job.file.key);
+    }
     scheduler.cancelJob(job);
     if (process.env.DEBUG) {
       const summary = summarize(job, result);
@@ -160,7 +157,7 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
       }
       interceptor.metrics?.recordJob(job.file, {
         result,
-        warmup: job.warmup !== null,
+        warmup: job.warmup,
         bytes: job.length,
         fetchedBytes: job.fetched,
         pieces: summary.pieces,
@@ -189,17 +186,21 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
     stop(job, 'done');
     if (process.env.DEBUG) {
       const summary = history.at(-1)!;
-      debugNote(job.file, `#${job.id} ${job.warmup === null ? '' : 'warm-up '}${job.kind} ${Math.round(job.length / KiB)} KiB in ${summary.ms} ms (${summary.rateKiBps} KiB/s), ${summary.pieces} pieces via ${summary.hosts.join(', ')}${summary.retries ? `, ${summary.retries} retries` : ''}${summary.duplicates ? `, ${summary.duplicates} duplicates` : ''}`);
+      debugNote(job.file, `#${job.id} ${job.warmup ? 'warm-up ' : ''}${job.kind} ${Math.round(job.length / KiB)} KiB in ${summary.ms} ms (${summary.rateKiBps} KiB/s), ${summary.pieces} pieces via ${summary.hosts.join(', ')}${summary.retries ? `, ${summary.retries} retries` : ''}${summary.duplicates ? `, ${summary.duplicates} duplicates` : ''}`);
     }
-    job.sink.done(job.buffer);
+    if (job.sink === null) {
+      headers.fulfil(job.file.key, new Uint8Array(job.buffer), job.total, job.contentType);
+    } else {
+      job.sink.done(job.buffer);
+    }
   }
 
   /** Before commit: the browser sends the request itself, nothing is lost */
   function fallback(job: Job, reason: string) {
     stop(job, 'fallback');
-    if (job.warmup !== null) {
+    if (job.sink === null) {
       // Nobody waits for a warm-up: requests covered by it fetch by themselves
-      job.sink.error();
+      headers.fail(job.file.key);
       return;
     }
     recordFailure();
@@ -214,8 +215,8 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
   function fail(job: Job, reason: string) {
     const now = performance.now();
     stop(job, 'failed');
-    if (job.warmup !== null) {
-      job.sink.error();
+    if (job.sink === null) {
+      headers.fail(job.file.key);
       return;
     }
     recordFailure();
@@ -240,6 +241,10 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
     }
     if (!job.committed) {
       job.committed = true;
+      job.contentType = response.headers.get('content-type') ?? '';
+      if (job.sink === null) {
+        return;
+      }
       /** What a native response would expose, for the whole range */
       const headers: Array<[string, string]> = [];
       response.headers.forEach((value, name) => {
@@ -263,7 +268,7 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
     job.fetched += chunk.byteLength;
     if (result !== 'mismatch' && job.state === 'running') {
       job.hostsUsed.add(att.host.hostname);
-      job.sink.progress(job.covered, job.length);
+      job.sink?.progress(job.covered, job.length);
       if (isSegmentComplete(att.seg)) {
         // The race is over for this piece
         for (const other of att.seg.attempts) {
@@ -308,7 +313,20 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
       complete(job);
       return;
     }
-    if (isSegmentComplete(seg) || seg.attempts.size > 0 || seg.queued) {
+    if (isSegmentComplete(seg) || seg.queued) {
+      return;
+    }
+    if (seg.attempts.size > 0) {
+      // A racer is still on the piece. It covers a lost race, but not a failed primary: left to a
+      // racer on a worse host, the piece would crawl to the player's timeout. A fresh primary joins,
+      // and settling keeps whichever is ahead
+      if (att.role === 'primary' && outcome !== MediaOutcome.Canceled && isRetryable(outcome) && !seg.final) {
+        seg.tries++;
+        if (process.env.DEBUG) {
+          debugNote(job.file, `#${job.id} piece ${seg.index} ${outcome} on ${att.host.hostname} after ${Math.round(performance.now() - att.startedAt)} ms, a racer still on it: fresh primary`);
+        }
+        scheduler.enqueue(job, seg);
+      }
       return;
     }
 
@@ -329,6 +347,9 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
     // Canceled by us (a race settled, a tail stolen) is no failure of the piece
     if (outcome !== MediaOutcome.Canceled) {
       seg.tries++;
+      if (process.env.DEBUG) {
+        debugNote(job.file, `#${job.id} piece ${seg.index} ${outcome} on ${att.host.hostname} after ${Math.round(performance.now() - att.startedAt)} ms (${att.bytes} bytes), try ${seg.tries}`);
+      }
     }
     if (seg.tries < MAX_TRIES_PER_SEGMENT) {
       scheduler.enqueue(job, seg);
@@ -349,7 +370,7 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
    * never ask for
    */
   function setUrgency(job: Job) {
-    if (job.warmup === 'other') {
+    if (job.warmup) {
       job.cls = RELAXED;
       job.deadline = job.createdAt + 5000;
     } else if (job.header) {
@@ -361,8 +382,12 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
     }
   }
 
-  /** Split a piece so both halves finish together, or add a duplicate */
-  function help(job: Job, seg: Segment, att: Attempt, kind: 'dup' | 'split', now: number) {
+  /**
+   * Split a piece so both halves finish together, or add a duplicate. A duplicate for a piece that
+   * is `stuck` (no first byte, or no new byte, past its soft threshold) is a rescue and always goes;
+   * one for a piece merely expected to go faster elsewhere is speculation, and `mayDuplicate` decides
+   */
+  function help(job: Job, seg: Segment, att: Attempt, kind: 'dup' | 'split', now: number, stuck = false) {
     const alternative = pool.bestAlternative(job, seg);
     if (alternative === null) {
       return false;
@@ -374,11 +399,39 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
         return true;
       }
     }
-    if (seg.extra < MAX_EXTRA) {
+    if (seg.extra < MAX_EXTRA && (stuck || mayDuplicate(job, now))) {
+      job.lastDuplicate = { at: now, rate: deliveredRate(job, now) };
       scheduler.enqueue(job, seg, 'dup');
       return true;
     }
     return false;
+  }
+
+  /**
+   * A duplicate takes bandwidth from the pieces that matter: none while the job already delivers
+   * `HEDGE_HEADROOM` times what the stream needs, none for a job whose last duplicate raised nothing
+   * (the line is full), and the last one gets `RATE_WINDOW_MS` to show before the next
+   */
+  function mayDuplicate(job: Job, now: number) {
+    if (job.saturated) {
+      return false;
+    }
+    const rate = deliveredRate(job, now);
+    if (rate >= HEDGE_HEADROOM * job.requiredRate) {
+      return false;
+    }
+    const last = job.lastDuplicate;
+    if (last === null) {
+      return true;
+    }
+    if (now - last.at < RATE_WINDOW_MS) {
+      return false;
+    }
+    if (last.rate > 0 && rate <= last.rate) {
+      job.saturated = true;
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -449,7 +502,9 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
       }
 
       if (!job.committed) {
-        if (now - job.createdAt > COMMIT_TIMEOUT_MS) {
+        // Never hand back while a host is left to try, except to leave the browser the other half of
+        // the player's own timeout
+        if (now - job.createdAt > (job.timeout > 0 ? job.timeout / 2 : COMMIT_TIMEOUT_MS)) {
           fallback(job, 'no CDN host answered in time');
           continue;
         }
@@ -467,6 +522,9 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
           }
         }
         if (forced) {
+          if (process.env.DEBUG) {
+            debugNote(job.file, `#${job.id}: no progress for ${JOB_STALL_MS} ms, unfinished pieces go to the player's own URL`);
+          }
           job.lastProgressAt = now;
         } else {
           fail(job, 'no progress');
@@ -497,7 +555,11 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
           slack
         });
         if (decision !== 'none') {
-          help(job, seg, att, decision, now);
+          const factor = URGENCY_FACTOR[job.cls];
+          const stuck = att.firstByteAt === 0
+            ? now - att.startedAt >= att.timeouts.ttfbSoft * factor
+            : now - att.lastByteAt >= att.timeouts.stallSoft * factor;
+          help(job, seg, att, decision, now, stuck);
         }
       }
     }
@@ -508,9 +570,9 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
   }
 
   /**
-   * Race a request on a few hosts at once: 3 when critical, 2 when urgent. A slow first byte is
-   * covered from the start, the losers go as soon as it is decided (`settleRace`), and with nothing
-   * measured yet, racing is also how hosts get measured.
+   * Race an unsplit request on a few hosts at once: 3 when critical, 2 when urgent. A slow first
+   * byte is covered from the start, the losers go as soon as it is decided (`settleRace`), and with
+   * nothing measured yet, racing is also how hosts get measured.
    */
   function raceWidth(job: Job) {
     let width = 1;
@@ -522,11 +584,14 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
     return Math.min(width, pool.usableHostCount(job));
   }
 
-  function start(params: JobParams, sink: SyntheticXhrSink) {
+  function start(params: JobParams, sink: SyntheticXhrSink | null) {
     const now = performance.now();
     const job = createJob({ ...params, cls: URGENT, total: totals.get(params.file.key) ?? null, sink });
     jobs.add(job);
-    sink.signal.addEventListener('abort', () => {
+    if (job.warmup) {
+      warmups.set(job.file.key, job);
+    }
+    sink?.signal.addEventListener('abort', () => {
       if (job.state === 'running') {
         stop(job, 'canceled');
       }
@@ -541,29 +606,49 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
       scheduler.enqueue(job, job.segments[i]);
     }
 
-    // Until a host is measured on this file, every piece is raced: on its own it may only go to the
-    // player's host (see `ownersOf`), a faster one takes over by winning the race
-    if (pieces === 1 || (job.warmup === null && pool.measuredHostCount(job) === 0)) {
+    if (pieces === 1) {
+      const seg = job.segments[0];
       const width = raceWidth(job);
-      for (let i = 0, len = job.segments.length; i < len; i++) {
-        for (let j = 1; j < width; j++) {
-          scheduler.enqueue(job, job.segments[i], 'dup');
-        }
+      for (let i = 1; i < width; i++) {
+        scheduler.enqueue(job, seg, 'dup');
       }
     }
-    debugNote(job.file, `#${job.id} ${job.warmup === null ? '' : 'warm-up '}${job.kind} ${Math.round(job.length / KiB)} KiB started: ${pieces} piece(s); ${scheduler.running.size} requests running, ${scheduler.queued()} queued`);
+    if (process.env.DEBUG) {
+      debugNote(job.file, `#${job.id} ${job.warmup ? 'warm-up ' : ''}${job.kind} ${Math.round(job.length / KiB)} KiB started: ${pieces} piece(s); ${scheduler.running.size} requests running, ${scheduler.queued()} queued`);
+    }
   }
 
   /** A request inside the init/index fetched ahead: served from it, as a copy */
+  /** The player asks for what a warm-up is still fetching: it becomes critical, and is raced */
+  function promote(fileKey: string) {
+    const job = warmups.get(fileKey);
+    if (job?.state !== 'running' || job.cls === CRITICAL) {
+      return;
+    }
+    job.cls = CRITICAL;
+    job.deadline = performance.now();
+    const width = raceWidth(job);
+    for (let i = 0, len = job.segments.length; i < len; i++) {
+      for (let j = 1; j < width; j++) {
+        scheduler.enqueue(job, job.segments[i], 'dup');
+      }
+    }
+  }
+
   async function serveHeader(header: CachedHeader, params: JobParams, sink: SyntheticXhrSink) {
     const waitedFrom = performance.now();
+    if (header.bytes === null) {
+      promote(params.file.key);
+    }
     // `ready` resolves true exactly when the bytes are there
     const ok = header.bytes !== null || await Promise.race([header.ready, wait(WARMUP_WAIT_MS).then(falseFn)]);
     if (sink.signal.aborted) {
       return;
     }
     if (!ok) {
-      debugNote(params.file, `${params.file.kind} ${params.range.start}-${params.range.end}: the warm-up's copy did not come in ${Math.round(performance.now() - waitedFrom)} ms, fetched on its own`);
+      if (process.env.DEBUG) {
+        debugNote(params.file, `${params.file.kind} ${params.range.start}-${params.range.end}: the warm-up's copy did not come in ${Math.round(performance.now() - waitedFrom)} ms, fetched on its own`);
+      }
       start(params, sink);
       return;
     }
@@ -579,20 +664,20 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
     if (header.total !== null) {
       responseHeaders.push(['content-range', `bytes ${range.start}-${range.end}/${header.total}`]);
     }
-    debugNote(params.file, `${params.file.kind} ${range.start}-${range.end} served from the warm-up, after waiting ${Math.round(performance.now() - waitedFrom)} ms`);
+    if (process.env.DEBUG) {
+      debugNote(params.file, `${params.file.kind} ${range.start}-${range.end} served from the warm-up, after waiting ${Math.round(performance.now() - waitedFrom)} ms`);
+    }
     sink.headersReceived(206, responseHeaders, '');
     sink.done(body);
   }
 
-  function warmUp(json: object, files: readonly MediaFile[]) {
-    if (files.length > 0 && !isOn(files[0])) {
-      return;
-    }
-    const items = planWarmup(json, files);
+  /** Every playable representation's init segment and index, into the header cache */
+  function warmUp(_json: object, files: readonly MediaFile[]) {
     const now = performance.now();
+    const items = warmupFiles(files);
     for (let i = 0, len = items.length; i < len; i++) {
-      const { file, current } = items[i];
-      if (headers.has(file.key) || file.segmentBase === null) {
+      const file = items[i];
+      if (headers.has(file.key)) {
         continue;
       }
       const candidates = interceptor.candidates(file);
@@ -601,105 +686,29 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
       if (requested === null) {
         continue;
       }
-
-      const range: ByteRange = { start: 0, end: file.segmentBase.index.end };
-      const header = headers.begin(file.key, range);
-      let total: number | null = null;
+      const range: ByteRange = { start: 0, end: file.segmentBase!.index.end };
+      headers.begin(file.key, range);
       start({
         file,
         // The key is pathname + search
         pathname: split0th(requested.key, '?'),
         range,
         header: true,
-        warmup: current ? 'current' : 'other',
+        warmup: true,
+        timeout: 0,
         candidates,
         requested
-      }, {
-        signal: new AbortController().signal,
-        headersReceived(_status, responseHeaders) {
-          for (let k = 0, count = responseHeaders.length; k < count; k++) {
-            const [name, value] = responseHeaders[k];
-            if (name === 'content-type') {
-              header.contentType = value;
-            } else if (name === 'content-range') {
-              total = parseContentRange(value)?.total ?? null;
-            }
-          }
-        },
-        progress: noop,
-        done(body) {
-          headers.fulfil(file.key, new Uint8Array(body), total, header.contentType);
-        },
-        error() {
-          headers.fail(file.key);
-        },
-        fallbackToNative: () => false
-      });
+      }, null);
     }
   }
 
-  if (mode === 'serve') {
-    interceptor.onPlayinfo(warmUp);
-  }
-
-  /** Debug builds only: download in parallel with the browser and compare */
-  function shadow(request: MediaXhrRequest, params: JobParams) {
-    const { xhr } = request.ctx;
-    const controller = new AbortController();
-    const startedAt = performance.now();
-    let engineBody: ArrayBuffer | null = null;
-    let engineMs = 0;
-    let nativeBody: ArrayBuffer | null = null;
-    let nativeMs = 0;
-
-    const compare = () => {
-      if (engineBody === null || nativeBody === null) {
-        return;
-      }
-      const a = new Uint8Array(engineBody);
-      const b = new Uint8Array(nativeBody);
-      let identical = a.byteLength === b.byteLength;
-      for (let i = 0, len = a.byteLength; identical && i < len; i++) {
-        identical = a[i] === b[i];
-      }
-      logger[identical ? 'info' : 'error'](`[thread-ripper] shadow ${params.file.kind} ${Math.round(a.byteLength / KiB)} KiB: ${identical ? 'identical' : 'MISMATCH'}, browser ${Math.round(nativeMs)} ms, thread-ripper ${Math.round(engineMs)} ms`);
-    };
-
-    xhr.addEventListener('load', () => {
-      const response: unknown = xhr.response;
-      if (typeof response === 'object' && response !== null && 'byteLength' in response) {
-        nativeBody = response as ArrayBuffer;
-        nativeMs = performance.now() - startedAt;
-        compare();
-      }
-    }, { once: true });
-    const cancel = () => controller.abort();
-    xhr.addEventListener('abort', cancel, { once: true });
-    xhr.addEventListener('error', cancel, { once: true });
-    xhr.addEventListener('timeout', cancel, { once: true });
-
-    start(params, {
-      signal: controller.signal,
-      headersReceived: noop,
-      progress: noop,
-      done(body) {
-        engineBody = body;
-        engineMs = performance.now() - startedAt;
-        compare();
-      },
-      error() {
-        logger.warn('[thread-ripper] shadow download failed', { pathname: params.pathname, range: params.range });
-      },
-      fallbackToNative: () => false
-    });
-  }
+  interceptor.onPlayinfo(warmUp);
 
   if (process.env.DEBUG) {
     Object.defineProperty(unsafeWindow, '__MBGTEB_THREAD_RIPPER__', {
       configurable: true,
       enumerable: false,
       value: {
-        mode,
         hosts: () => model.snapshot(performance.now()),
         slots: () => pool.snapshot(),
         jobs: () => Array.from(jobs, job => summarize(job, 'done')),
@@ -715,7 +724,7 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
     name: 'thread-ripper',
     serve(request): XhrResponder | null {
       const now = performance.now();
-      // A suspected outage (`model.isOutage()`) is no reason to decline: it may be a quiet moment
+      // A suspected outage is no reason to decline: it may be a quiet moment
       // at startup, and if the network is really down, the jobs fail and the player retries anyway
       if (integrityFailed || now < offUntil) {
         return declined(integrityFailed ? 'off after an integrity failure' : 'off after repeated failures', request);
@@ -726,10 +735,6 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
       }
       if (match === null) {
         return declined('file unknown: no playinfo listed it (yet)', request);
-      }
-      // The A/B coin said no for this video: nothing worth a line
-      if (!isOn(match.file)) {
-        return null;
       }
       // The URL the player asked for is the last resort: not acceptable, the browser keeps it
       if (requested === null) {
@@ -753,15 +758,12 @@ export function createThreadRipper(interceptor: PlayerInterceptor, nativeFetch: 
         range,
         // The initialization segment and the index come first: nothing plays without them
         header: segmentBase !== null && range.end <= segmentBase.index.end,
-        warmup: null,
+        warmup: false,
+        timeout: request.ctx.timeout,
         candidates,
         requested
       };
 
-      if (mode === 'shadow') {
-        shadow(request, params);
-        return null;
-      }
       const header = headers.get(match.file.key, range);
       if (header !== null) {
         return (sink) => {

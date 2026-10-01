@@ -17,6 +17,7 @@ import { registerDebugCommand } from '../../utils/debug-menu';
 import type { ByteRange } from './range';
 import { byteRangeLength } from './range';
 import type { MediaFile } from './registry';
+import { noop } from 'foxts/noop';
 
 const STORAGE_KEY = 'mbgtbe:debug:metrics-sessions';
 /** Set by the build (see `rollup.config.ts`) */
@@ -90,9 +91,7 @@ export interface PlaybackMetrics {
   recordJob(this: void, file: MediaFile, job: JobRecord): void,
   recordAttempt(this: void, file: MediaFile, attempt: AttemptRecord): void,
   /** An event for the startup trace of `file`'s video, or of the video playing */
-  note(this: void, file: MediaFile | null, text: string): void,
-  /** Which arm of an A/B test `file`'s video is in: part of its configuration */
-  setArm(this: void, file: MediaFile, arm: string): void
+  note(this: void, file: MediaFile | null, text: string): void
 }
 
 /** One saved session, and one row of the comparison */
@@ -190,14 +189,13 @@ interface Session {
   readonly id: string,
   /** `performance.now()` when the session began: its trace counts from here */
   readonly createdAt: number,
-  /** The arm of an A/B test, see `setArm` */
-  arm: string | null,
   readonly trace: string[],
   readonly videoKey: string,
   /** Where the video plays: set again once it can play, it may have been prefetched on another page */
   page: string,
   readonly startedAt: number,
-  readonly config: string,
+  /** Read again when the player first asks: a playinfo may come before the phases are registered */
+  config: string,
   /** `performance.now()` of the player's first media request in this session */
   firstRequestAt: number | null,
   /** `performance.now()` the trace runs until, once the player's first request came */
@@ -231,14 +229,13 @@ export function createPlaybackMetrics(configOf: () => string): PlaybackMetrics {
   const sessions = new Map<string, Session>();
   /** The video playing: the one the player's requests were last for */
   let current: Session | null = null;
-  let badge: HTMLElement | null = null;
   let video: HTMLMediaElement | null = null;
   /**
    * The player's element last took a new source: Bilibili prefetches the next video before the
    * viewer goes to it, so startup counts from whichever is later, this or the first request
    */
   let loadStartAt = 0;
-  let detach: (() => void) | null = null;
+  let detach = noop;
 
   /**
    * The session of `file`'s video. Only the player's own requests (`play`) make it the current one,
@@ -264,39 +261,15 @@ export function createPlaybackMetrics(configOf: () => string): PlaybackMetrics {
         save(current);
       }
       current = session;
-      showConfig();
+      session.config = configOf() || 'none';
     }
     return session;
-  }
-
-  /** Debug builds: whether the video playing gets thread-ripper, in a corner of the page */
-  function showConfig() {
-    const session = current;
-    if (session === null) {
-      return;
-    }
-    if (badge === null) {
-      // Not parsed yet: the next call (every second, `findVideo`) shows it
-      const body = unsafeWindow.document.querySelector('body');
-      if (body === null) {
-        return;
-      }
-      badge = unsafeWindow.document.createElement('div');
-      badge.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:2147483647;padding:2px 6px;font:12px/1.5 monospace;color:#fff;background:rgba(0,0,0,.65);border-radius:4px;pointer-events:none';
-      body.append(badge);
-    }
-    const on = session.config.includes('thread-ripper') && session.arm !== 'A/B: off';
-    const text = `MBGTEB debug: thread-ripper ${on ? 'ON' : 'OFF'}${session.arm === null ? '' : ' (A/B)'}`;
-    if (badge.textContent !== text) {
-      badge.textContent = text;
-    }
   }
 
   function createSession(file: MediaFile): Session {
     return {
       id: `${Date.now().toString(36)}-${file.videoKey}`,
       createdAt: performance.now(),
-      arm: null,
       trace: [],
       videoKey: file.videoKey,
       page: unsafeWindow.location.pathname,
@@ -351,7 +324,7 @@ export function createPlaybackMetrics(configOf: () => string): PlaybackMetrics {
 
   /** The player's `<video>`: it may be replaced, by an episode switch for one */
   function attach(element: HTMLMediaElement) {
-    detach?.();
+    detach();
     video = element;
     // Found only once it plays: its start went by unseen
     if (current !== null && current.startupMs === null && !element.paused && element.readyState >= 3) {
@@ -422,7 +395,6 @@ export function createPlaybackMetrics(configOf: () => string): PlaybackMetrics {
   }
 
   function findVideo() {
-    showConfig();
     const element = findPlayerVideo();
     if (element !== null && element !== video) {
       attach(element);
@@ -638,12 +610,6 @@ export function createPlaybackMetrics(configOf: () => string): PlaybackMetrics {
     note(file, text) {
       const session = file === null ? current : sessionFor(file, false);
       if (session !== null) trace(session, text);
-    },
-    setArm(file, arm) {
-      const session = sessionFor(file, false);
-      session.arm = arm;
-      trace(session, arm);
-      if (session === current) showConfig();
     }
   };
 }
@@ -697,7 +663,7 @@ function summarize(session: Session, now: number): SessionSummary {
     build: BUILD_ID,
     page: session.page,
     startedAt: new Date(session.startedAt).toISOString(),
-    config: session.arm === null ? session.config : `${session.config} (${session.arm})`,
+    config: session.config,
     playedS: round(session.playedS, 1),
     startupMs: session.startupMs === null ? null : Math.round(session.startupMs),
     stalls: session.stalls + (session.stallAt === null ? 0 : 1),
