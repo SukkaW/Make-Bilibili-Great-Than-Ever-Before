@@ -30,9 +30,8 @@ export const MAX_PIECE = 4 * MiB;
 export const MAX_SERVED_LENGTH = 64 * MiB;
 export const MAX_TRIES_PER_SEGMENT = 6;
 
-export const TTFB_HARD_MS = 2400;
-/** No validated 206 from any host by then: give the request back to the browser */
-export const COMMIT_TIMEOUT_MS = clamp(2 * TTFB_HARD_MS, 2000, 5000);
+/** No validated 206 from any host by then, when the player set no timeout: give the request back to the browser */
+export const COMMIT_TIMEOUT_MS = 4800;
 /** Committed, but no byte arrived for this long */
 export const JOB_STALL_MS = 8000;
 /**

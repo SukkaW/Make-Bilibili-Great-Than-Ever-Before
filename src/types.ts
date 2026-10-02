@@ -1,5 +1,5 @@
 import type { SyntheticXhrSink } from './utils/xhr-override';
-import type { PlayerInterceptor } from './core/player';
+import type { player } from './core/player';
 
 export interface MakeBilibiliGreatThanEverBeforeModule {
   name: string,
@@ -77,5 +77,5 @@ export interface MakeBilibiliGreatThanEverBeforeHook {
   /** The page's original `fetch`, bypassing every `onBeforeFetch` / `onResponse` hook */
   readonly nativeFetch: typeof fetch,
   /** The player request interceptor: media modules register their phases here */
-  readonly player: PlayerInterceptor
+  readonly player: typeof player
 };

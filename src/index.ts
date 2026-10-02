@@ -18,7 +18,7 @@ import defuseStorage from './modules/defuse-storage';
 import forceEnable4K from './modules/force-enable-4k';
 import { initModuleMenu } from './utils/module-menu';
 import { initDebugMenu } from './utils/debug-menu';
-import { createPlayerInterceptor } from './core/player';
+import { initPlayerInterceptor, player } from './core/player';
 import { PatchedXMLHttpRequest, xhrHooks } from './utils/xhr-override';
 import { disguiseAsNative } from './utils/fake-native-function';
 
@@ -69,7 +69,7 @@ declare global {
     fn();
   }
 
-  const baseHook: Omit<MakeBilibiliGreatThanEverBeforeHook, 'player'> = {
+  const hook: MakeBilibiliGreatThanEverBeforeHook = {
     addStyle(style: string) {
       styles.push(style);
     },
@@ -92,12 +92,12 @@ declare global {
       xhrHooks.send.add(cb);
     },
     onlyCallOnce,
-    nativeFetch
+    nativeFetch,
+    player
   };
 
   /** Always on, whatever is enabled: no-p2p and thread-ripper are its phases */
-  const player = createPlayerInterceptor(baseHook);
-  const hook: MakeBilibiliGreatThanEverBeforeHook = { ...baseHook, player };
+  initPlayerInterceptor(hook);
 
   const hostname = unsafeWindow.location.hostname;
   const pathname = unsafeWindow.location.pathname;

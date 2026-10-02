@@ -92,10 +92,9 @@ export interface Job {
   readonly length: number,
   /** The initialization segment or the index: nothing plays without them */
   readonly header: boolean,
-  /** Fetched ahead of the player: `current` is what it will ask for first */
   /** Fetched ahead of the player into the header cache: nobody waits on it until the player asks */
   readonly warmup: boolean,
-  /** Set when the job starts, see `setUrgency` in the engine */
+  /** Set when the job starts, raised when the player asks for a warm-up still running */
   cls: UrgencyClass,
   /** When its bytes are wanted (performance.now() time): past its start by how urgent it is */
   deadline: number,
@@ -114,7 +113,6 @@ export interface Job {
   readonly bytes: Uint8Array,
   /** The pieces `range` is split into, in order */
   readonly segments: Segment[],
-  /** The synthetic XHR response this job drives */
   /** The player's request it answers, `null` for a warm-up */
   readonly sink: SyntheticXhrSink | null,
   /** From the first valid response: the warm-up's copy is served with it */

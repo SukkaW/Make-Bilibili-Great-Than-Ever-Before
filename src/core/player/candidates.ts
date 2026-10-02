@@ -16,8 +16,9 @@ import { addArrayElementsToSet } from 'foxts/add-array-elements-to-set';
 import { pickOne } from 'foxts/pick-random';
 import { isAkamaiHost, isMirrorHost, isP2PCDNDomain } from './cdn-classify';
 import type { SignatureFamily } from './cdn-classify';
-import type { HostModel } from './host-model';
-import type { MediaAddress, MediaFile, MediaHostCatalog } from './registry';
+import { acceptsFamily, isAddressBanned, isCoolingDown, isExcluded, isFamilyRefused, provenAddress } from './host-model';
+import { hostCatalog } from './registry';
+import type { MediaAddress, MediaFile } from './registry';
 
 /**
  * How much a host with no measurement is preferred, lower first: what Bilibili listed for the file
@@ -92,7 +93,7 @@ const SEED_HOSTS = [
  * when the registry does not know it), as they are, plus every upgcxcode signature among them on
  * every upgcxcode host.
  */
-export function mediaCandidates(requested: MediaAddress | null, file: MediaFile | null, catalog: MediaHostCatalog): MediaCandidate[] {
+export function mediaCandidates(requested: MediaAddress | null, file: MediaFile | null): MediaCandidate[] {
   const candidates: MediaCandidate[] = [];
   const seen = new Set<string>();
 
@@ -106,12 +107,12 @@ export function mediaCandidates(requested: MediaAddress | null, file: MediaFile 
   const listed = file === null ? [] : file.addresses;
   const sources = requested === null ? listed : [requested, ...listed];
 
-  const upgcxcodeHosts = upgcxcodeHostsOf(file, catalog);
+  const upgcxcodeHosts = upgcxcodeHostsOf(file);
   /** Signatures already on every upgcxcode host: the requested one is usually listed as well */
   const moved = new Set<string>();
   for (let i = 0, len = sources.length; i < len; i++) {
     const source = sources[i];
-    add(asListed(source, catalog));
+    add(asListed(source));
 
     const { key, family, deadline } = source;
     if (source.pathname.includes('/upgcxcode/') && !moved.has(key)) {
@@ -134,11 +135,11 @@ export function mediaCandidates(requested: MediaAddress | null, file: MediaFile 
 }
 
 /** Not banned, not about to expire, and this host neither refuses its signature nor lacks the file */
-export function isCandidateUsable(candidate: MediaCandidate, model: HostModel, file: MediaFile | null, now: number, nowSec: number) {
-  return !model.isAddressBanned(candidate.key)
+export function isCandidateUsable(candidate: MediaCandidate, file: MediaFile | null, now: number, nowSec: number) {
+  return !isAddressBanned(candidate.key)
     && (candidate.deadline === 0 || (candidate.deadline - nowSec) * 1000 > DEADLINE_MARGIN_MS)
-    && !model.isFamilyRefused(candidate.hostname, candidate.family, now)
-    && (file === null || !model.isExcluded(candidate.hostname, file, now));
+    && !isFamilyRefused(candidate.hostname, candidate.family, now)
+    && (file === null || !isExcluded(candidate.hostname, file, now));
 }
 
 /** The candidate a request made for this address stands for, `null` if it is not acceptable */
@@ -156,9 +157,9 @@ export function findCandidate(candidates: readonly MediaCandidate[], address: Me
  * A usable candidate of the lowest tier, at random, on a host not cooling down if there is one:
  * what the browser fetches when the requested URL is not acceptable
  */
-export function defaultCandidate(candidates: readonly MediaCandidate[], model: HostModel, file: MediaFile | null, now: number): MediaCandidate | null {
-  const usable = Array.from(usableByHost(candidates, model, file, now).values());
-  const available = usable.filter(candidate => !model.isCoolingDown(candidate.hostname, now));
+export function defaultCandidate(candidates: readonly MediaCandidate[], file: MediaFile | null, now: number): MediaCandidate | null {
+  const usable = Array.from(usableByHost(candidates, file, now).values());
+  const available = usable.filter(candidate => !isCoolingDown(candidate.hostname, now));
   const options = available.length > 0 ? available : usable;
   let best: CandidateTier | null = null;
   for (let i = 0, len = options.length; i < len; i++) {
@@ -170,14 +171,14 @@ export function defaultCandidate(candidates: readonly MediaCandidate[], model: H
 }
 
 /** For every host, its most preferred usable candidate */
-function usableByHost(candidates: readonly MediaCandidate[], model: HostModel, file: MediaFile | null, now: number): Map<string, MediaCandidate> {
+function usableByHost(candidates: readonly MediaCandidate[], file: MediaFile | null, now: number): Map<string, MediaCandidate> {
   const nowSec = Date.now() / 1000;
   const byHost = new Map<string, MediaCandidate>();
   for (let i = 0, len = candidates.length; i < len; i++) {
     const candidate = candidates[i];
-    if (isCandidateUsable(candidate, model, file, now, nowSec)) {
+    if (isCandidateUsable(candidate, file, now, nowSec)) {
       const current = byHost.get(candidate.hostname);
-      if (current === undefined || isPreferred(candidate, current, model)) {
+      if (current === undefined || isPreferred(candidate, current)) {
         byHost.set(candidate.hostname, candidate);
       }
     }
@@ -186,13 +187,13 @@ function usableByHost(candidates: readonly MediaCandidate[], model: HostModel, f
 }
 
 /** For one host: the signature it served last, else one of a family it accepts, else the freshest */
-function isPreferred(candidate: MediaCandidate, current: MediaCandidate, model: HostModel) {
-  const proven = model.provenAddress(candidate.hostname);
+function isPreferred(candidate: MediaCandidate, current: MediaCandidate) {
+  const proven = provenAddress(candidate.hostname);
   if ((candidate.key === proven) !== (current.key === proven)) {
     return candidate.key === proven;
   }
-  const accepted = model.acceptsFamily(candidate.hostname, candidate.family);
-  if (accepted !== model.acceptsFamily(current.hostname, current.family)) {
+  const accepted = acceptsFamily(candidate.hostname, candidate.family);
+  if (accepted !== acceptsFamily(current.hostname, current.family)) {
     return accepted;
   }
   if (candidate.tier !== current.tier) {
@@ -202,7 +203,7 @@ function isPreferred(candidate: MediaCandidate, current: MediaCandidate, model: 
 }
 
 /** The file's own upgcxcode hosts first (Bilibili picked them for this viewer), then the others */
-function upgcxcodeHostsOf(file: MediaFile | null, catalog: MediaHostCatalog) {
+function upgcxcodeHostsOf(file: MediaFile | null) {
   const names = new Set<string>();
   if (file !== null) {
     for (let i = 0, len = file.addresses.length; i < len; i++) {
@@ -212,9 +213,9 @@ function upgcxcodeHostsOf(file: MediaFile | null, catalog: MediaHostCatalog) {
       }
     }
   }
-  for (const hostname of catalog.mirror) names.add(hostname);
-  for (const hostname of catalog.bcache) names.add(hostname);
-  for (const hostname of catalog.akamai) names.add(hostname);
+  for (const hostname of hostCatalog.mirror) names.add(hostname);
+  for (const hostname of hostCatalog.bcache) names.add(hostname);
+  for (const hostname of hostCatalog.akamai) names.add(hostname);
   addArrayElementsToSet(names, SEED_HOSTS);
   // The catalog only holds mirror / bcache hosts already: this keeps it that way
   return Array.from(names).filter(hostname => !isP2PCDNDomain(hostname));
@@ -230,7 +231,7 @@ function tierOnHost(hostname: string, family: SignatureFamily) {
 }
 
 /** An address as it was given: non-P2P ones over HTTPS, P2P ones untouched (their own ports) */
-function asListed(source: MediaAddress, catalog: MediaHostCatalog): MediaCandidate {
+function asListed(source: MediaAddress): MediaCandidate {
   const { hostname, key, family, deadline } = source;
   const p2p = isP2PCDNDomain(hostname) || source.class === 'mcdn-upgcxcode' || source.class === 'mcdn-tf' || source.class === 'szbdyd';
   if (p2p) {
@@ -239,7 +240,7 @@ function asListed(source: MediaAddress, catalog: MediaHostCatalog): MediaCandida
   let tier: CandidateTier;
   if (PROXY_HOST_RE.test(hostname)) {
     tier = CandidateTier.Proxy;
-  } else if (source.class === 'bcache' || catalog.bcache.has(hostname)) {
+  } else if (source.class === 'bcache' || hostCatalog.bcache.has(hostname)) {
     tier = CandidateTier.ListedBcache;
   } else {
     tier = CandidateTier.ListedMirror;

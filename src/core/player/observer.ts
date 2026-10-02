@@ -4,8 +4,7 @@
  */
 
 import { p } from 'fast-percentile';
-import type { HostModel } from './host-model';
-import { MediaOutcome, MIN_RATE_SAMPLE_BYTES } from './host-model';
+import { isCold, MediaOutcome, MIN_RATE_SAMPLE_BYTES, noteBytes, recordOutcome, recordSample } from './host-model';
 import type { MediaAddress, MediaFile } from './registry';
 
 /** The gaps between a request's chunks are reported as their 90th percentile */
@@ -24,10 +23,10 @@ export function stopWatching(xhr: XMLHttpRequest) {
 }
 
 /** Time a media XHR the browser sends itself, and report how its host did */
-export function observeNativeMediaXhr(xhr: XMLHttpRequest, address: MediaAddress, file: MediaFile, hosts: HostModel) {
+export function observeNativeMediaXhr(xhr: XMLHttpRequest, address: MediaAddress, file: MediaFile) {
   const { hostname } = address;
   const startedAt = performance.now();
-  const cold = hosts.isCold(hostname, startedAt);
+  const cold = isCold(hostname, startedAt);
 
   let headersAt = 0;
   let firstAt = 0;
@@ -44,7 +43,7 @@ export function observeNativeMediaXhr(xhr: XMLHttpRequest, address: MediaAddress
   };
   const onProgress = (event: ProgressEvent) => {
     const now = performance.now();
-    hosts.noteBytes(now);
+    noteBytes(now);
     if (firstAt === 0) {
       firstAt = now;
       firstLoaded = event.loaded;
@@ -83,11 +82,11 @@ export function observeNativeMediaXhr(xhr: XMLHttpRequest, address: MediaAddress
       default:
         outcome = outcomeOfStatus(xhr.status, address.deadline);
     }
-    hosts.recordOutcome(hostname, file, address, outcome, now);
+    recordOutcome(hostname, file, address, outcome, now);
 
     if (headersAt !== 0 && outcome === MediaOutcome.Ok) {
       const bytes = lastLoaded - firstLoaded;
-      hosts.recordSample({
+      recordSample({
         hostname,
         file,
         cold,
