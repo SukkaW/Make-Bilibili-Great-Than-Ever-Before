@@ -45,7 +45,6 @@ export enum MediaOutcome {
   ConnectFail = 'connect-fail',
   /** TypeError before any header */
   Network = 'network',
-  TtfbTimeout = 'ttfb-timeout',
   Stall = 'stall',
   /** Two hosts sent different bytes for the same range */
   Integrity = 'integrity'
@@ -103,7 +102,6 @@ const NETWORK_DOWN_MS = 3000;
 const CONNECTION_FAILURES = new Set<MediaOutcome>([
   MediaOutcome.ConnectFail,
   MediaOutcome.Network,
-  MediaOutcome.TtfbTimeout,
   MediaOutcome.Stall,
   MediaOutcome.Truncated,
   MediaOutcome.Reset
@@ -219,9 +217,6 @@ export function recordOutcome(hostname: string, file: MediaFile, address: { key:
     case MediaOutcome.Reset:
     case MediaOutcome.Stall:
       cooldown(host, now, 500);
-      break;
-    case MediaOutcome.TtfbTimeout:
-      cooldown(host, now, 2000);
       break;
     case MediaOutcome.BadRange:
     case MediaOutcome.StaleObject:

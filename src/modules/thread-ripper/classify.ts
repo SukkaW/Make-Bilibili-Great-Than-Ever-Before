@@ -3,7 +3,7 @@ import { isP2PCDNDomain } from '../../core/player/cdn-classify';
 import { MediaOutcome } from '../../core/player/host-model';
 import type { ContentRange } from '../../core/player/range';
 
-export type AbortReason = MediaOutcome.Canceled | MediaOutcome.TtfbTimeout | MediaOutcome.Stall;
+export type AbortReason = MediaOutcome.Canceled | MediaOutcome.Stall;
 
 export interface ResponseVerdict {
   outcome: MediaOutcome,

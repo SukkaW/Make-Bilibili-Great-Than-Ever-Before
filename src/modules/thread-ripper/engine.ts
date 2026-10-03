@@ -82,6 +82,8 @@ const SMALL_PIECE = 256 * KiB;
  * one: on a slower host the whole request would wait for that piece
  */
 const ETA_BAND = 1.25;
+/** Fewer hosts than this may carry pieces: one piece of each request scouts a host never measured */
+const MIN_OWNERS = 4;
 /** Neither half of a split is smaller */
 const STEAL_MIN = 192 * KiB;
 /** Speed samples from shorter transfers are mostly round trip; below `FULL_SAMPLE`, cut short */
@@ -124,7 +126,9 @@ interface Segment {
   /** Waiting for a slot */
   queued: boolean,
   /** Last resort: the player's own URL */
-  final: boolean
+  final: boolean,
+  /** Goes to a host never measured, so more hosts can carry pieces */
+  scout: boolean
 }
 
 /** One fetch() of (the rest of) a piece from one host. Times are performance.now() ms, `0` = not yet */
@@ -138,11 +142,10 @@ interface Attempt {
   /** Set when we abort it ourselves */
   abortReason: AbortReason | null,
   /**
-   * No first byte after `ttfbSoft`, or silence after bytes flowed for `stallSoft`: a racer goes on;
-   * after the hard ones, the request goes. Before the job's urgency scales them
+   * No first byte after `ttfbSoft`, or silence after bytes flowed for `stallSoft`: a racer goes on.
+   * Silent for twice `stallSoft`, the request goes. Before the job's urgency scales them
    */
   readonly ttfbSoft: number,
-  readonly ttfbHard: number,
   readonly stallSoft: number,
   readonly startedAt: number,
   /** A validated response arrived */
@@ -294,12 +297,19 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
 
     // No more pieces than the hosts that may carry one alone can take
     const typical = model.typicalSpeed(file);
-    const count = pieceCount(length, typical.rate, typical.ttfb, ownersOf(job, Math.min(length, MiB), now)?.size ?? 1);
+    const owners = ownersOf(job, Math.min(length, MiB), now);
+    const count = pieceCount(length, typical.rate, typical.ttfb, owners?.size ?? 1);
     // One rescue of each kind per four pieces, up to four
     job.rescues.straggler = Math.min(4, Math.ceil(count / 4));
     job.rescues.stale = job.rescues.straggler;
     for (let i = 0; i < count; i++) {
       job.segments.push(segment(range.start + Math.floor(length * i / count), range.start + Math.floor(length * (i + 1) / count) - 1));
+    }
+    // Few hosts may carry pieces: the last one scouts another (before any is measured, all do)
+    if (owners !== null && count > 1 && owners.size < MIN_OWNERS) {
+      job.segments[count - 1].scout = true;
+    }
+    for (let i = 0; i < count; i++) {
       enqueue(job, job.segments[i]);
     }
     if (count === 1) {
@@ -572,7 +582,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     // canceled before it waited as long as requests usually take says nothing
     const waited = now - att.startedAt;
     let ttfb = att.headersAt === 0 ? null : att.headersAt - att.startedAt;
-    if (ttfb === null && (outcome === MediaOutcome.TtfbTimeout || (outcome === MediaOutcome.Canceled && waited > model.typicalSpeed(job.file).ttfb))) {
+    if (ttfb === null && outcome === MediaOutcome.Canceled && waited > model.typicalSpeed(job.file).ttfb) {
       ttfb = waited;
     }
     model.recordSpeed(hostname, job.file, { ttfb, rate, partial: outcome !== MediaOutcome.Ok || att.bytes < FULL_SAMPLE, gap: att.gaps.length === 0 ? null : p90(att.gaps) });
@@ -633,11 +643,11 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   }
 
   /**
-   * Race a piece, if a host has room: another one, or for a `rescue` of a stuck request the one
-   * expected to finish first, its own host included (a slow first byte is one request's)
+   * Race a piece on a host not already on it, if one has room: over HTTP/2 one hung connection
+   * hangs every request to its host
    */
-  function duplicate(job: Job, seg: Segment, rescue = false) {
-    const target = seg.extra < MAX_EXTRA && hasSlot(job) ? pickHost(job, seg, true, rescue) : null;
+  function duplicate(job: Job, seg: Segment) {
+    const target = seg.extra < MAX_EXTRA && hasSlot(job) ? pickHost(job, seg, true) : null;
     if (target !== null) {
       seg.extra++;
       launch(job, seg, 'dup', target);
@@ -656,7 +666,6 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       abortReason: null,
       // A few times what the host usually takes
       ttfbSoft: clamp(2 * estimate.ttfb, 250, 1200),
-      ttfbHard: clamp(6 * estimate.ttfb, 1500, 3000),
       stallSoft: estimate.gap === null ? 600 : clamp(4 * estimate.gap, 300, 1000),
       startedAt: performance.now(),
       headersAt: 0,
@@ -706,18 +715,23 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   function tick() {
     const now = performance.now();
     for (const att of running) {
-      if (att.abortReason !== null) {
+      // A slow first byte is never given up on: an edge without the file is pulling it from
+      // upstream, and another one would start over. Its racer takes over once that one delivers
+      // (`settleRace`)
+      if (att.abortReason !== null || att.firstByteAt === 0) {
         continue;
       }
-      const factor = URGENCY_FACTOR[att.job.cls];
-      const silent = att.firstByteAt === 0
-        ? now - att.startedAt > att.ttfbHard * factor
-        : now - att.lastByteAt > 2 * att.stallSoft * factor;
-      // Only when something else can carry its bytes: killing it would only hand the piece to
-      // whatever racer is on it, and that racer is there because it was the worse choice
+      // Gone silent after bytes flowed, and so has its host: one silent while the host delivers to
+      // its other requests only waits its turn on their shared connection, and its racer takes
+      // over (`settleRace`). Only when something else can carry its bytes, else the piece would
+      // only go to whatever racer is on it, there because it was the worse choice
       const { job, seg } = att;
-      if (silent && (seg.attempts.size > 1 || hasAlternative(job, seg, now) || now - att.startedAt > JOB_STALL_MS)) {
-        abortAttempt(att, att.firstByteAt === 0 ? MediaOutcome.TtfbTimeout : MediaOutcome.Stall);
+      const silence = 2 * att.stallSoft * URGENCY_FACTOR[job.cls];
+      if (
+        now - att.lastByteAt > silence && now - (lastDelivery.get(att.hostname) ?? -Infinity) > silence
+        && (seg.attempts.size > 1 || hasAlternative(job, seg, now) || now - att.startedAt > JOB_STALL_MS)
+      ) {
+        abortAttempt(att, MediaOutcome.Stall);
       }
     }
 
@@ -775,6 +789,18 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       }
       if (seg.attempts.size > 1) {
         settleRace(seg);
+        // Every request on it still waits for a first byte: one more host races it
+        let newest: Attempt | null = null;
+        let waiting = true;
+        for (const att of seg.attempts) {
+          waiting &&= att.firstByteAt === 0 && att.abortReason === null;
+          if (newest === null || att.startedAt > newest.startedAt) {
+            newest = att;
+          }
+        }
+        if (waiting && newest !== null && isStuck(newest, now)) {
+          rescue(newest, now);
+        }
         continue;
       }
       const att = seg.attempts.values().next().value;
@@ -782,10 +808,8 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         continue;
       }
       // No first byte yet, or it stopped: another host may do better at once
-      if (att.firstByteAt === 0
-        ? now - att.startedAt >= att.ttfbSoft * URGENCY_FACTOR[job.cls]
-        : now - att.lastByteAt >= att.stallSoft * URGENCY_FACTOR[job.cls]) {
-        duplicate(job, seg, true);
+      if (isStuck(att, now)) {
+        rescue(att, now);
       } else {
         const relief = needsRelief(att, now, typical.rate, () => alternativeOf(job, seg), slack);
         const started = relief !== null && relieve(att, now);
@@ -793,6 +817,22 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
           job.rescues[relief]--;
         }
       }
+    }
+  }
+
+  /** No first byte, or silent after bytes flowed, past its soft threshold */
+  function isStuck(att: Attempt, now: number) {
+    const factor = URGENCY_FACTOR[att.job.cls];
+    return att.firstByteAt === 0
+      ? now - att.startedAt >= att.ttfbSoft * factor
+      : now - att.lastByteAt >= att.stallSoft * factor;
+  }
+
+  /** A racer on another host for a stuck request's piece */
+  function rescue(att: Attempt, now: number) {
+    const { job, seg } = att;
+    if (duplicate(job, seg) && process.env.DEBUG) {
+      debugNote(`${job.file.kind} ${job.range.start}-${job.range.end}: racer for a request on ${att.hostname} ${att.firstByteAt === 0 ? 'without a first byte' : 'gone silent'} after ${Math.round(now - att.startedAt)} ms`);
     }
   }
 
@@ -872,15 +912,21 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
 
   /**
    * Where a piece goes. A primary only to a host that may carry it alone (`ownersOf`), relaxed work
-   * anywhere, to explore; a duplicate anywhere it is not running already, a rescue anywhere. Hosts
-   * not tried since the piece last made progress first, except for a rescue: the fastest
+   * anywhere, to explore; a duplicate anywhere it is not running already. Hosts not tried since the
+   * piece last made progress first
    */
-  function pickHost(job: Job, seg: Segment, dup: boolean, rescue = false): HostOption | null {
+  function pickHost(job: Job, seg: Segment, dup: boolean): HostOption | null {
     const bytes = seg.end - seg.frontier + 1;
-    const owners = dup || job.cls === RELAXED ? null : ownersOf(job, bytes, performance.now());
-    const all = eligible(job, seg, dup && !rescue, bytes, owners);
+    // A scout goes to a host never measured, once; with none left, like any piece
+    let all = !dup && seg.scout ? eligible(job, seg, false, bytes, null).filter(option => !option.estimate.measured) : [];
+    if (all.length === 0) {
+      const owners = dup || job.cls === RELAXED ? null : ownersOf(job, bytes, performance.now());
+      all = eligible(job, seg, dup, bytes, owners);
+    } else {
+      seg.scout = false;
+    }
     const untried = all.filter(option => !seg.tried.has(option.hostname));
-    const options = rescue || untried.length === 0 ? all : untried;
+    const options = untried.length === 0 ? all : untried;
     if (options.length === 0) {
       return null;
     }
@@ -905,6 +951,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   /** Hosts with room that could take the piece now, of `only` if given, not those on it when `avoidPiece` */
   function eligible(job: Job, seg: Segment, avoidPiece: boolean, bytes: number, only: ReadonlySet<string> | null, now = performance.now()) {
     const nowSec = Date.now() / 1000;
+    const loads = hostLoads(now);
     const options: HostOption[] = [];
     for (const [hostname, listed] of job.candidates) {
       const active = busy.get(hostname) ?? 0;
@@ -917,7 +964,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       }
       const candidate = avoidPiece && onPiece ? null : pickCandidate(hostname, listed, job.file, now, nowSec);
       if (candidate !== null) {
-        options.push({ hostname, candidate, estimate: model.estimate(hostname, job.file, bytes), active });
+        options.push({ hostname, candidate, estimate: withLoad(model.estimate(hostname, job.file, bytes), loads.get(hostname), bytes), active });
       }
     }
     return options;
@@ -929,13 +976,14 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
    */
   function ownersOf(job: Job, bytes: number, now: number): Set<string> | null {
     const nowSec = Date.now() / 1000;
+    const loads = hostLoads(now);
     const measured: Array<[hostname: string, eta: number]> = [];
     let best = Infinity;
     for (const [hostname, listed] of job.candidates) {
       if (model.isCoolingDown(hostname, now) || pickCandidate(hostname, listed, job.file, now, nowSec) === null) {
         continue;
       }
-      const estimate = model.estimate(hostname, job.file, bytes);
+      const estimate = withLoad(model.estimate(hostname, job.file, bytes), loads.get(hostname), bytes);
       if (estimate.measured) {
         measured.push([hostname, estimate.eta]);
         best = Math.min(best, estimate.eta);
@@ -948,6 +996,20 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       }
     }
     return owners.size > 0 ? owners : null;
+  }
+
+  /** hostname -> [its requests receiving, the bytes per ms they get together] */
+  function hostLoads(now: number) {
+    const loads = new Map<string, [receiving: number, rate: number]>();
+    for (const att of running) {
+      if (att.firstByteAt !== 0 && att.abortReason === null) {
+        const load = loads.get(att.hostname) ?? [0, 0];
+        load[0]++;
+        load[1] += recentRate(att, now);
+        loads.set(att.hostname, load);
+      }
+    }
+    return loads;
   }
 
   /** For one host: the signature it served last, else one of a family it accepts, else any, in turn */
@@ -1047,13 +1109,25 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     name: 'thread-ripper',
     serve({ ctx, range, file, candidates, requested }): XhrResponder | null {
       const now = performance.now();
-      // Left to the browser: off after failures, not a single byte range, a file no playinfo listed,
-      // a requested URL that is not acceptable (it is the last resort), too long, or failed just now
-      if (
-        integrityFailed || range === null || file === null || requested === null || now < offUntil
-        || byteRangeLength(range) > MAX_SERVED_LENGTH
-        || (nativeRetry.get(`${file.key}:${range.start}-${range.end}`) ?? 0) > now
-      ) {
+      // Left to the browser. The requested URL is the last resort: not acceptable, the browser keeps it
+      let reason: string | null = null;
+      if (integrityFailed || now < offUntil) {
+        reason = 'off after failures';
+      } else if (range === null) {
+        reason = 'not a single byte range';
+      } else if (file === null) {
+        reason = 'no playinfo lists the file';
+      } else if (requested === null) {
+        reason = 'the requested URL is not acceptable';
+      } else if (byteRangeLength(range) > MAX_SERVED_LENGTH) {
+        reason = 'range too long';
+      } else if ((nativeRetry.get(`${file.key}:${range.start}-${range.end}`) ?? 0) > now) {
+        reason = 'it failed just now';
+      }
+      if (reason !== null || range === null || file === null || requested === null) {
+        if (process.env.DEBUG) {
+          debugNote(`left to the browser, ${reason}: ${ctx.url}`);
+        }
         return null;
       }
 
@@ -1101,7 +1175,7 @@ function pieceCount(length: number, rate: number, ttfb: number, hosts: number): 
 }
 
 function segment(start: number, end: number): Segment {
-  return { end, frontier: start, attempts: new Set(), tries: 0, tried: new Set(), extra: 0, queued: false, final: false };
+  return { end, frontier: start, attempts: new Set(), tries: 0, tried: new Set(), extra: 0, queued: false, final: false, scout: false };
 }
 
 /**
@@ -1236,6 +1310,15 @@ function splitPoint(seg: Segment, r: number, { ttfb, rate }: HostEstimate): numb
   const m = seg.frontier + Math.ceil(r * (ttfb + remaining / rate) / (1 + r / rate));
   // The running attempt must still have work while the new one waits for its first byte
   return seg.end + 1 - m < STEAL_MIN || m - seg.frontier < Math.max(STEAL_MIN, r * ttfb) ? null : m;
+}
+
+/**
+ * What one more request to a host would get: no more than its requests get now. They share one
+ * HTTP/2 connection, so on a host whose connection is the limit they slow each other down
+ */
+function withLoad(estimate: HostEstimate, load: [receiving: number, rate: number] | undefined, bytes: number): HostEstimate {
+  const rate = load === undefined || load[1] <= 0 ? estimate.rate : Math.min(estimate.rate, load[1] / load[0]);
+  return rate === estimate.rate ? estimate : { ...estimate, rate, eta: estimate.ttfb + bytes / rate };
 }
 
 /**
