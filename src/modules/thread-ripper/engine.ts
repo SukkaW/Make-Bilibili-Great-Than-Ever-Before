@@ -4,8 +4,9 @@
  *
  * - Pieces: a range taking more than a couple of round trips is cut into pieces of about a second
  *   of transfer each.
- * - Owners: a piece goes on its own only to a host expected to finish it within `ETA_BAND` of the
- *   best measured one, or to the player's own host until that is measured. Others only race.
+ * - Owners: a piece goes on its own only to a host measured to finish it within `ETA_BAND` of the
+ *   best one; before any is measured, to any (the addresses Bilibili listed first). No host is
+ *   trusted for what it is, the player's own included. Others only race.
  * - Races: a request in one piece starts on several hosts, and a piece without a first byte or
  *   stalled gets a racer elsewhere. Once both racers receive, the one behind goes.
  * - Endgame: with slots free and nothing waiting, the slowest piece's tail is split off to an
@@ -20,6 +21,7 @@ import { clamp } from 'foxts/clamp';
 import { falseFn, noop } from 'foxts/noop';
 import { wait } from 'foxts/wait';
 import { p, p50 } from 'fast-percentile';
+import { ibytes, prettyBandwidth } from 'xbits';
 import { logger } from '../../logger';
 import type { MediaServePhase } from '../../core/player';
 import { CandidateTier, defaultCandidate, isCandidateUsable } from '../../core/player/candidates';
@@ -330,7 +332,9 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   function complete(job: Job) {
     stop(job, true);
     if (process.env.DEBUG) {
-      debugNote(`${job.file.kind} ${job.range.start}-${job.range.end} in ${Math.round(performance.now() - job.createdAt)} ms, ${job.segments.length} pieces`);
+      const ms = Math.max(1, performance.now() - job.createdAt);
+      const pieces = job.segments.length;
+      debugNote(`${job.file.kind} ${job.range.start}-${job.range.end} (${ibytes(job.length)}) in ${Math.round(ms)} ms at ${prettyBandwidth(job.length * 8000 / ms)} (stream ${prettyBandwidth(job.file.bandwidth)}), ${pieces} piece${pieces === 1 ? '' : 's'}`);
     }
     if (job.sink) {
       job.sink.done(job.buffer);
@@ -921,12 +925,10 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
 
   /**
    * The hosts a piece of `bytes` may go to on its own, busy or not: the measured ones expected to
-   * finish it within `ETA_BAND` of the best, and the player's own until it is measured. `null`
-   * when none can take it
+   * finish it within `ETA_BAND` of the best. `null` when none is measured: any host may take it
    */
   function ownersOf(job: Job, bytes: number, now: number): Set<string> | null {
     const nowSec = Date.now() / 1000;
-    const owners = new Set<string>();
     const measured: Array<[hostname: string, eta: number]> = [];
     let best = Infinity;
     for (const [hostname, listed] of job.candidates) {
@@ -937,10 +939,9 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       if (estimate.measured) {
         measured.push([hostname, estimate.eta]);
         best = Math.min(best, estimate.eta);
-      } else if (hostname === job.requested.hostname) {
-        owners.add(hostname);
       }
     }
+    const owners = new Set<string>();
     for (let i = 0, len = measured.length; i < len; i++) {
       if (measured[i][1] <= best * ETA_BAND) {
         owners.add(measured[i][0]);

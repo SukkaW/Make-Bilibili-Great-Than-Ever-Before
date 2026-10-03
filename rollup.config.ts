@@ -36,6 +36,8 @@ export default defineConfig(
     ([filename, debug]) => [
       {
         input: 'src/index.ts',
+        // xbits does not declare `sideEffects: false`, yet only debug code uses it: keep it out of release builds
+        treeshake: { moduleSideEffects: id => !id.includes('/node_modules/xbits/') },
         output: [{
           format: 'iife',
           file: `dist/${filename}.user.js`,

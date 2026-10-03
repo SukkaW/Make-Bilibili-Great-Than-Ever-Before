@@ -24,7 +24,8 @@
     "fake-indexeddb": "^6.2.5",
     "fast-percentile": "^1.0.0",
     "flru": "^1.0.2",
-    "foxts": "^5.9.1"
+    "foxts": "^5.9.1",
+    "xbits": "^0.2.0"
   },
   "devDependencies": {
     "@eslint-sukka/node": "^9.1.0",

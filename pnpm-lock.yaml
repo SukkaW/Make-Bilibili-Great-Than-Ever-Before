@@ -181,6 +181,9 @@ importers:
       foxts:
         specifier: ^5.9.1
         version: 5.9.1
+      xbits:
+        specifier: ^0.2.0
+        version: 0.2.0
     devDependencies:
       '@eslint-sukka/node':
         specifier: ^9.1.0
@@ -1517,6 +1520,9 @@ packages:
     resolution: {integrity: sha512-BN22B5eaMMI9UMtjrGd5g5eCYPpCPDUy0FJXbYsaT5zYxjFOckS53SQDE3pWkVoWpHXVb3BrYcEN4Twa55B5cA==}
     engines: {node: '>=0.10.0'}
 
+  xbits@0.2.0:
+    resolution: {integrity: sha512-JMd+tT2WwmbQZxIE9lQ3WoziWgTngKwdMbuk1CBqjos2zn9y5LYYSGRkYqzsFlwITHJehpdHgDdTOf4Qls/Q+w==}
+
   yaml@2.8.2:
     resolution: {integrity: sha512-mplynKqc1C2hTVYxd0PU2xQAc22TI1vShAYGksCCfxbn/dFwnHTNi1bvYsBTkhdUNtGIf5xNOg938rrSSYvS9A==}
     engines: {node: '>= 14.6'}
@@ -2796,6 +2802,8 @@ snapshots:
       isexe: 2.0.0
 
   word-wrap@1.2.5: {}
+
+  xbits@0.2.0: {}
 
   yaml@2.8.2: {}
 
