@@ -1,4 +1,5 @@
 {
+  "$schema": "https://cdn.jsdelivr.net/npm/rollup-plugin-userscript-metablock@latest/userscript-metadata.schema.json",
   "name": "Make Bilibili Great Than Ever Before",
   "namespace": "https://skk.moe",
   "grant": [

@@ -41,7 +41,7 @@
     "eslint-formatter-sukka": "^9.1.0",
     "rollup": "^4.64.0",
     "rollup-plugin-swc3": "^0.12.1",
-    "rollup-plugin-userscript-metablock": "^0.6.0",
+    "rollup-plugin-userscript-metablock": "^0.7.1",
     "typescript": "^6.0.3"
   },
   "packageManager": "pnpm@12.8.1"
