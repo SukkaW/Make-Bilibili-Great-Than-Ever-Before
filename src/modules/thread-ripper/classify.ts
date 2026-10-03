@@ -14,7 +14,6 @@ export interface ResponseVerdict {
 export function classifyResponse(
   response: Pick<Response, 'type' | 'status' | 'redirected' | 'url'>,
   contentRange: ContentRange | null,
-  contentLength: number | null,
   expected: { start: number, end: number, total: number | null, addressExpired: boolean }
 ): ResponseVerdict {
   const invalid = (outcome: MediaOutcome): ResponseVerdict => ({ outcome, total: null });
@@ -25,11 +24,9 @@ export function classifyResponse(
 
   const { status } = response;
   if (status === 206) {
+    // Without it, which bytes came back is unknown: every tested host exposes it
     if (contentRange === null) {
-      // Only good enough if we know the file and the length fits
-      return expected.total !== null && contentLength === expected.end - expected.start + 1
-        ? { outcome: MediaOutcome.Ok, total: expected.total }
-        : invalid(MediaOutcome.Unverifiable);
+      return invalid(MediaOutcome.Unverifiable);
     }
     if (contentRange.start !== expected.start) {
       return invalid(MediaOutcome.BadRange);
@@ -51,8 +48,7 @@ export function classifyResponse(
   if (status === 401 || status === 403) return invalid(expected.addressExpired ? MediaOutcome.Expired : MediaOutcome.Refused);
   if (status === 404 || status === 410) return invalid(MediaOutcome.Missing);
   if (status === 416) return invalid(MediaOutcome.EofClamp);
-  if (status === 412 || status === 429) return invalid(MediaOutcome.Throttled);
-  if (status === 503) return invalid(MediaOutcome.Overloaded);
+  if (status === 412 || status === 429 || status === 503) return invalid(MediaOutcome.Throttled);
   return invalid(MediaOutcome.ServerError);
 }
 

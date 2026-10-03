@@ -1,29 +1,16 @@
 /**
  * The player request interceptor: owns every interception point of the player's media requests.
  *
- * Feature modules are phases of the interceptor, always run in this order:
+ * - capture (always): every playinfo goes to the registry
+ * - policy (`no-p2p`): which candidate URLs media requests may use (see `candidates.ts`). Once one
+ *   is registered, the browser's own media requests (XHR open, fetch, media src) go to the
+ *   requested URL if it is acceptable, else to an acceptable one
+ * - serve (`thread-ripper`): take over the download of a media XHR, or leave it to the browser
  *
- * 1. capture (always): playinfo -> registry
- * 2. candidates (core): every URL a media request could go to, see `candidates.ts`
- * 3. policy (`no-p2p`): which candidates are acceptable, dropping and converting some. Never
- *    picks one
- * 4. select (core, once a policy phase is registered): the URL the browser fetches natively (XHR
- *    open / fetch / HTMLMediaElement.src): the requested one if it is acceptable, else any
- *    acceptable one. Which is fastest is the serve phase's business
- * 5. serve (`thread-ripper`): take over the download of a media XHR, splitting the range into
- *    pieces raced and hedged across every acceptable candidate and reassembling them into one
- *    synthetic response, or decline: the browser then fetches the selected URL
- * 6. observe (always): how the browser's own media requests went -> host model
- *
- * Without a policy phase every candidate is acceptable and the browser's URL is left alone.
- *
- * With no phase registered, the interceptor only reads: it never alters a request.
- *
- * Not a module: the bootstrap (`src/index.ts`) starts it before any module runs, whatever is
- * enabled. Modules reach it through `hook.player`.
+ * With no phase registered, the interceptor only reads. Not a module: the bootstrap starts it before
+ * any module runs, and modules reach it through `hook.player`.
  */
 
-import flru from 'flru';
 import { FIFO } from 'foxts/fifo';
 import { never } from 'foxts/guard';
 import { logger } from '../../logger';
@@ -33,13 +20,11 @@ import { isKnownNonVideoUrl } from './cdn-classify';
 import { defaultCandidate, findCandidate, isCandidateUsable, mediaCandidates } from './candidates';
 import type { MediaCandidate } from './candidates';
 import * as hosts from './host-model';
-import { createPlaybackMetrics } from './metrics';
-import { observeNativeMediaXhr, stopWatching } from './observer';
 import { initPlayinfoCapture } from './playinfo';
 import { parseRangeHeader } from './range';
 import type { ByteRange } from './range';
-import { findFile, ingestPlayinfo, noteHost, registryVersion, toMediaAddress } from './registry';
-import type { MediaAddress, MediaFile, MediaFileMatch } from './registry';
+import { findFile, ingestPlayinfo, noteHost, toMediaAddress } from './registry';
+import type { MediaAddress, MediaFile } from './registry';
 
 export interface MediaPolicyPhase {
   readonly type: 'policy',
@@ -55,10 +40,11 @@ export interface MediaXhrRequest {
   readonly address: MediaAddress,
   /** The request's single bounded `Range`, `null` if it has none */
   readonly range: ByteRange | null,
-  readonly match: MediaFileMatch | null,
+  /** `null` if no playinfo listed it */
+  readonly file: MediaFile | null,
   /** Every acceptable URL of the file */
   readonly candidates: readonly MediaCandidate[],
-  /** The URL the XHR was opened with (the selected one), if acceptable */
+  /** The URL the XHR was opened with, if acceptable */
   readonly requested: MediaCandidate | null
 }
 
@@ -69,41 +55,23 @@ export interface MediaServePhase {
   serve(this: void, request: MediaXhrRequest): XhrResponder | null
 }
 
-/** What the interceptor knows of a media URL: read once, shared by every request for it */
-interface MediaUrlInfo {
-  /** `registryVersion` when it was read: stale once the registry changes */
-  readonly version: number,
-  readonly address: MediaAddress,
-  readonly match: MediaFileMatch | null,
-  /** Every acceptable URL of its file, computed on first need */
-  candidates: readonly MediaCandidate[] | null
-}
+type PlayinfoListener = (playinfo: object, files: MediaFile[]) => void;
 
 /** no-p2p, once registered */
 let policy: MediaPolicyPhase | null = null;
 /** thread-ripper, once registered */
 let server: MediaServePhase | null = null;
-/** Debug builds only: playback and request metrics, compared across sessions */
-const metrics = process.env.DEBUG
-  ? createPlaybackMetrics(() => [policy?.name, server?.name].filter(Boolean).join('+'))
-  : null;
 /** The bootstrap's hooks: the route hooks are installed with them once a policy registers */
 let bootstrapHook: MakeBilibiliGreatThanEverBeforeHook | null = null;
-
-/**
- * By href, as the page gave it: the player asks for every segment of a file with the same URL,
- * and each XHR goes through both open and send
- */
-const urlInfos = flru<MediaUrlInfo>(64);
+let routeHooksInstalled = false;
+/** The last few, replayed to a late listener */
 const recentPlayinfos = new FIFO<[playinfo: object, files: MediaFile[]]>();
-const playinfoListeners = new Set<(playinfo: object, files: MediaFile[]) => void>();
+const playinfoListeners = new Set<PlayinfoListener>();
 
 /** What media modules get as `hook.player` */
 export const player = {
-  /** Everything learned about every CDN host, by every phase and the observer */
+  /** Everything learned about every CDN host */
   hosts,
-  /** Debug builds only: playback and request metrics, compared across sessions */
-  metrics,
   /** Every acceptable URL of a file, for requests of its own (the warm-up) */
   candidates: acceptableCandidates,
   registerPhase,
@@ -114,122 +82,84 @@ export const player = {
 export function initPlayerInterceptor(hook: MakeBilibiliGreatThanEverBeforeHook) {
   bootstrapHook = hook;
 
-  // 1. capture
   initPlayinfoCapture(hook, (json, meta) => {
     const files = ingestPlayinfo(json, meta);
     if (!files) {
       return;
-    }
-    if (files.length > 0) {
-      metrics?.note(files[0], `playinfo (${meta}): ${files.length} files`);
     }
     recentPlayinfos.enqueue([json, files]);
     if (recentPlayinfos.size > 3) {
       recentPlayinfos.dequeue();
     }
     for (const cb of playinfoListeners) {
-      try {
-        cb(json, files);
-      } catch (e) {
-        logger.error('Failed to notify playinfo', e);
-      }
+      notify(cb, json, files);
     }
   });
 
-  // 6. observe: a re-opened XHR drops the request it was sending, without an event to say so
-  hook.onXhrOpen((xhrOpenArgs, xhr) => {
-    stopWatching(xhr);
-    return xhrOpenArgs;
-  });
-
-  // 5. serve, 6. observe
   hook.onXhrSend((ctx) => {
-    const request = toMediaXhrRequest(ctx);
-    if (!request) {
+    if (server === null) {
       return null;
     }
-
-    let responder: XhrResponder | null = null;
-    if (server !== null) {
-      try {
-        responder = server.serve(request);
-      } catch (e) {
-        logger.error(`[player-interceptor] serve phase "${server.name}" failed`, e, { url: ctx.url });
-      }
+    const request = toMediaXhrRequest(ctx);
+    try {
+      return request && server.serve(request);
+    } catch (e) {
+      logger.error(`[player-interceptor] serve phase "${server.name}" failed`, e, { url: ctx.url });
+      return null;
     }
-
-    const { match, range, address } = request;
-    if (match !== null && range !== null) {
-      try {
-        metrics?.watchRequest(ctx.xhr, match.file, range, address.hostname, responder !== null);
-        // A serve phase reports its own requests
-        if (!responder) {
-          observeNativeMediaXhr(ctx.xhr, address, match.file);
-        }
-      } catch (e) {
-        logger.error('[player-interceptor] failed to observe media XHR', e, { url: ctx.url });
-      }
-    }
-    return responder;
   });
+}
 
-  if (process.env.DEBUG) {
-    Object.defineProperty(unsafeWindow, '__MBGTEB_PLAYER_INTERCEPTOR__', {
-      configurable: true,
-      enumerable: false,
-      value: {
-        hosts: () => hosts.snapshot(performance.now()),
-        file(url: string) {
-          const match = findFile(toMediaAddress(new URL(url, unsafeWindow.location.href)));
-          return match && { file: match.file, hosts: hosts.fileSnapshot(match.file, performance.now()) };
-        },
-        page: (kind: 'video' | 'audio' = 'video') => hosts.pageSnapshot(kind, performance.now()),
-        phases: () => [policy?.name, server?.name].filter(Boolean),
-        playinfos: () => Array.from(recentPlayinfos)
-      }
-    });
+function registerPhase(phase: MediaPolicyPhase | MediaServePhase) {
+  if (phase.type === 'policy') {
+    policy = phase;
+    installRouteHooks(bootstrapHook!);
+  } else {
+    server = phase;
+  }
+  logger.info(`[player-interceptor] ${phase.type} phase "${phase.name}" registered`);
+}
+
+/** Also replays the last few playinfos */
+function onPlayinfo(cb: PlayinfoListener) {
+  playinfoListeners.add(cb);
+  for (const [playinfo, files] of recentPlayinfos) {
+    notify(cb, playinfo, files);
   }
 }
 
-/** @throws on an invalid URL */
-function infoOf(href: string): MediaUrlInfo {
-  const cached = urlInfos.get(href);
-  if (cached?.version === registryVersion()) {
-    return cached;
-  }
-  const address = toMediaAddress(new URL(href));
-  const match = findFile(address);
-  if (match === null) {
-    // Hosts seen outside any playinfo are candidates for other requests too
-    noteHost(address);
-  }
-  const info: MediaUrlInfo = { version: registryVersion(), address, match, candidates: null };
-  urlInfos.set(href, info);
-  return info;
+/** Every acceptable URL of a file, for a request (`requested`) or for its own */
+function acceptableCandidates(file: MediaFile | null, requested: MediaAddress | null = null) {
+  const candidates = mediaCandidates(requested, file);
+  return policy === null ? candidates : policy.filter(candidates);
 }
 
-function candidatesOf(info: MediaUrlInfo): readonly MediaCandidate[] {
-  info.candidates ??= acceptableCandidates(info.match?.file ?? null, info.address);
-  return info.candidates;
+function notify(cb: PlayinfoListener, playinfo: object, files: MediaFile[]) {
+  try {
+    cb(playinfo, files);
+  } catch (e) {
+    logger.error('Failed to notify playinfo', e);
+  }
 }
 
 /**
- * 4. select
- *
- * @param via which interception point the request came through, for the logs
+ * @throws on an invalid URL
  * @returns the URL the browser should fetch instead, `null` to leave the request as it is
  */
 function route(url: string | ReadonlyURL, via: string): string | null {
   const href = typeof url === 'string' ? (url.startsWith('//') ? 'https:' + url : url) : url.href;
-  const info = infoOf(href);
-  const { address, match } = info;
-  // Neither a CDN URL nor a listed one: not a media request, left alone
-  if (match === null && address.class === 'unknown') {
-    return null;
+  const address = toMediaAddress(new URL(href));
+  const file = findFile(address);
+  if (file === null) {
+    // Neither a CDN URL nor a listed one: not a media request, left alone
+    if (address.class === 'unknown') {
+      return null;
+    }
+    // Hosts seen outside any playinfo are candidates for other requests too
+    noteHost(address);
   }
 
-  const candidates = candidatesOf(info);
-  const file = match?.file ?? null;
+  const candidates = acceptableCandidates(file, address);
   const now = performance.now();
   const requested = findCandidate(candidates, address);
   // The player's own URL, unless it is known not to work right now; failing that, still better
@@ -245,7 +175,6 @@ function route(url: string | ReadonlyURL, via: string): string | null {
   return chosen.href === href ? null : chosen.href;
 }
 
-let routeHooksInstalled = false;
 function installRouteHooks(hook: MakeBilibiliGreatThanEverBeforeHook) {
   if (routeHooksInstalled) {
     return;
@@ -354,42 +283,13 @@ function toMediaXhrRequest(ctx: XhrSendContext): MediaXhrRequest | null {
     }
   }
 
-  let info: MediaUrlInfo;
+  let address: MediaAddress;
   try {
-    info = infoOf(url);
+    address = toMediaAddress(new URL(url));
   } catch {
     return null;
   }
-  // Only a serve phase needs them, and only for a file it knows
-  const candidates = server === null || info.match === null ? [] : candidatesOf(info);
-  return { ctx, address: info.address, range, match: info.match, candidates, requested: findCandidate(candidates, info.address) };
-}
-
-function registerPhase(phase: MediaPolicyPhase | MediaServePhase) {
-  if (phase.type === 'policy') {
-    policy = phase;
-    urlInfos.clear(false);
-    installRouteHooks(bootstrapHook!);
-  } else {
-    server = phase;
-  }
-  logger.info(`[player-interceptor] ${phase.type} phase "${phase.name}" registered`);
-}
-
-/** Also replays the last few playinfos */
-function onPlayinfo(cb: (playinfo: object, files: MediaFile[]) => void) {
-  playinfoListeners.add(cb);
-  for (const [playinfo, files] of recentPlayinfos) {
-    try {
-      cb(playinfo, files);
-    } catch (e) {
-      logger.error('Failed to notify playinfo', e);
-    }
-  }
-}
-
-/** 2. candidates, 3. policy: every acceptable URL of a file, for a request or for its own (the warm-up) */
-function acceptableCandidates(file: MediaFile | null, requested: MediaAddress | null = null) {
-  const candidates = mediaCandidates(requested, file);
-  return policy === null ? candidates : policy.filter(candidates);
+  const file = findFile(address);
+  const candidates = file === null ? [] : acceptableCandidates(file, address);
+  return { ctx, address, range, file, candidates, requested: findCandidate(candidates, address) };
 }

@@ -16,8 +16,8 @@ import { addArrayElementsToSet } from 'foxts/add-array-elements-to-set';
 import { pickOne } from 'foxts/pick-random';
 import { isAkamaiHost, isMirrorHost, isP2PCDNDomain } from './cdn-classify';
 import type { SignatureFamily } from './cdn-classify';
-import { acceptsFamily, isAddressBanned, isCoolingDown, isExcluded, isFamilyRefused, provenAddress } from './host-model';
-import { hostCatalog } from './registry';
+import { isAddressBanned, isCoolingDown, isExcluded, isFamilyRefused } from './host-model';
+import { upgcxcodeHosts } from './registry';
 import type { MediaAddress, MediaFile } from './registry';
 
 /**
@@ -158,7 +158,8 @@ export function findCandidate(candidates: readonly MediaCandidate[], address: Me
  * what the browser fetches when the requested URL is not acceptable
  */
 export function defaultCandidate(candidates: readonly MediaCandidate[], file: MediaFile | null, now: number): MediaCandidate | null {
-  const usable = Array.from(usableByHost(candidates, file, now).values());
+  const nowSec = Date.now() / 1000;
+  const usable = candidates.filter(candidate => isCandidateUsable(candidate, file, now, nowSec));
   const available = usable.filter(candidate => !isCoolingDown(candidate.hostname, now));
   const options = available.length > 0 ? available : usable;
   let best: CandidateTier | null = null;
@@ -168,38 +169,6 @@ export function defaultCandidate(candidates: readonly MediaCandidate[], file: Me
     }
   }
   return best === null ? null : pickOne(options.filter(candidate => candidate.tier === best));
-}
-
-/** For every host, its most preferred usable candidate */
-function usableByHost(candidates: readonly MediaCandidate[], file: MediaFile | null, now: number): Map<string, MediaCandidate> {
-  const nowSec = Date.now() / 1000;
-  const byHost = new Map<string, MediaCandidate>();
-  for (let i = 0, len = candidates.length; i < len; i++) {
-    const candidate = candidates[i];
-    if (isCandidateUsable(candidate, file, now, nowSec)) {
-      const current = byHost.get(candidate.hostname);
-      if (current === undefined || isPreferred(candidate, current)) {
-        byHost.set(candidate.hostname, candidate);
-      }
-    }
-  }
-  return byHost;
-}
-
-/** For one host: the signature it served last, else one of a family it accepts, else the freshest */
-function isPreferred(candidate: MediaCandidate, current: MediaCandidate) {
-  const proven = provenAddress(candidate.hostname);
-  if ((candidate.key === proven) !== (current.key === proven)) {
-    return candidate.key === proven;
-  }
-  const accepted = acceptsFamily(candidate.hostname, candidate.family);
-  if (accepted !== acceptsFamily(current.hostname, current.family)) {
-    return accepted;
-  }
-  if (candidate.tier !== current.tier) {
-    return candidate.tier < current.tier;
-  }
-  return candidate.deadline > current.deadline;
 }
 
 /** The file's own upgcxcode hosts first (Bilibili picked them for this viewer), then the others */
@@ -213,11 +182,8 @@ function upgcxcodeHostsOf(file: MediaFile | null) {
       }
     }
   }
-  for (const hostname of hostCatalog.mirror) names.add(hostname);
-  for (const hostname of hostCatalog.bcache) names.add(hostname);
-  for (const hostname of hostCatalog.akamai) names.add(hostname);
+  for (const hostname of upgcxcodeHosts) names.add(hostname);
   addArrayElementsToSet(names, SEED_HOSTS);
-  // The catalog only holds mirror / bcache hosts already: this keeps it that way
   return Array.from(names).filter(hostname => !isP2PCDNDomain(hostname));
 }
 
@@ -240,7 +206,7 @@ function asListed(source: MediaAddress): MediaCandidate {
   let tier: CandidateTier;
   if (PROXY_HOST_RE.test(hostname)) {
     tier = CandidateTier.Proxy;
-  } else if (source.class === 'bcache' || hostCatalog.bcache.has(hostname)) {
+  } else if (source.class === 'bcache') {
     tier = CandidateTier.ListedBcache;
   } else {
     tier = CandidateTier.ListedMirror;

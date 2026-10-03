@@ -17,7 +17,6 @@ import disableAV1 from './modules/disable-av1';
 import defuseStorage from './modules/defuse-storage';
 import forceEnable4K from './modules/force-enable-4k';
 import { initModuleMenu } from './utils/module-menu';
-import { initDebugMenu } from './utils/debug-menu';
 import { initPlayerInterceptor, player } from './core/player';
 import { PatchedXMLHttpRequest, xhrHooks } from './utils/xhr-override';
 import { disguiseAsNative } from './utils/fake-native-function';
@@ -164,9 +163,6 @@ declare global {
       // no default
     }
   }
-
-  // Debug builds only, listed after the modules
-  initDebugMenu();
 
   // Add Style
   const sheet = new CSSStyleSheet();

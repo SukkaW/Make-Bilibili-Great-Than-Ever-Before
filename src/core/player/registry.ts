@@ -1,6 +1,6 @@
 import flru from 'flru';
 import { logger } from '../../logger';
-import { classifyCdnUrl, isAkamaiHost, signatureDeadlineOf, signatureFamilyOf } from './cdn-classify';
+import { classifyCdnUrl, signatureDeadlineOf, signatureFamilyOf } from './cdn-classify';
 import type { CdnUrlClass, SignatureFamily } from './cdn-classify';
 import { parseByteRangeSpec } from './range';
 import type { ByteRange } from './range';
@@ -32,8 +32,6 @@ export interface MediaFile {
   /** The video it belongs to: every representation listed by one playinfo shares it */
   readonly videoKey: string,
   readonly kind: MediaKind,
-  /** Quality id for video, audio id for audio */
-  readonly id: number,
   readonly codecs: string,
   readonly mimeType: string,
   /** Bits per second */
@@ -43,31 +41,9 @@ export interface MediaFile {
   readonly addresses: readonly MediaAddress[]
 }
 
-export interface MediaFileMatch {
-  /** As listed by the newest playinfo: the freshest signed addresses, whichever one was requested */
-  readonly file: MediaFile,
-  /** The signed address itself is listed. Otherwise only its path matched, maybe with a newer signature */
-  readonly exact: boolean
-}
+/** Every upgcxcode host (upos mirror, Bilibili PoP, Akamai) seen in any playinfo or request */
+export const upgcxcodeHosts = new Set<string>();
 
-/** All upgcxcode hosts are interchangeable, so we collect them here. Only the registry adds to it */
-export interface MediaHostCatalog {
-  /** Upos mirrors: interchangeable for any upos-signed address */
-  readonly mirror: ReadonlySet<string>,
-  /** Bilibili's own PoPs: interchangeable as well */
-  readonly bcache: ReadonlySet<string>,
-  /** Only valid with Akamai's own signatures */
-  readonly akamai: ReadonlySet<string>
-}
-
-const mirrorHosts = new Set<string>();
-const bcacheHosts = new Set<string>();
-const akamaiHosts = new Set<string>();
-/** Every upgcxcode host seen, in any playinfo or request */
-export const hostCatalog: MediaHostCatalog = { mirror: mirrorHosts, bcache: bcacheHosts, akamai: akamaiHosts };
-
-/** Every signed address seen (pathname + search) */
-const knownAddresses = flru<true>(1200);
 /**
  * pathname -> the file as listed by the newest playinfo. A new playinfo re-signs the same paths,
  * so the old addresses keep working until their deadline, and the new ones are fresher
@@ -75,24 +51,11 @@ const knownAddresses = flru<true>(1200);
 const filesByPath = flru<MediaFile>(400);
 let fileCount = 0;
 let videoCount = 0;
-let version = 0;
 
-/** Changes whenever a playinfo is ingested or a host added to the catalog */
-export function registryVersion() {
-  return version;
-}
-
-/** Collect the host of a CDN URL seen outside of playinfo */
+/** Collect the host of a CDN URL */
 export function noteHost(address: MediaAddress) {
-  let catalog: Set<string> | null = null;
-  if (address.class === 'mirror') {
-    catalog = isAkamaiHost(address.hostname) ? akamaiHosts : mirrorHosts;
-  } else if (address.class === 'bcache') {
-    catalog = bcacheHosts;
-  }
-  if (catalog !== null && !catalog.has(address.hostname)) {
-    catalog.add(address.hostname);
-    version++;
+  if (address.class === 'mirror' || address.class === 'bcache') {
+    upgcxcodeHosts.add(address.hostname);
   }
 }
 
@@ -127,7 +90,6 @@ export function ingestPlayinfo(json: object, meta: string): MediaFile[] | null {
       key: known?.key ?? `file-${++fileCount}`,
       videoKey,
       kind,
-      id: Number(representation.id) || 0,
       codecs: typeof representation.codecs === 'string' ? representation.codecs : '',
       mimeType: typeof mimeType === 'string' ? mimeType : '',
       bandwidth: Number(representation.bandwidth) || 0,
@@ -136,20 +98,18 @@ export function ingestPlayinfo(json: object, meta: string): MediaFile[] | null {
     };
     files.push(file);
     for (let j = 0, count = addresses.length; j < count; j++) {
-      knownAddresses.set(addresses[j].key, true);
       filesByPath.set(addresses[j].pathname, file);
     }
   }
-  version++;
 
   logger.info('CDN URLs extracted', { meta });
 
   return files;
 }
 
-export function findFile(address: MediaAddress): MediaFileMatch | null {
-  const file = filesByPath.get(address.pathname);
-  return file === undefined ? null : { file, exact: knownAddresses.has(address.key) };
+/** As listed by the newest playinfo: the freshest signed addresses, whichever one was requested */
+export function findFile(address: MediaAddress): MediaFile | null {
+  return filesByPath.get(address.pathname) ?? null;
 }
 
 /** Read everything the interceptor needs from a CDN URL, once */
