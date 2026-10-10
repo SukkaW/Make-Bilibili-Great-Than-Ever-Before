@@ -1,6 +1,11 @@
+import type { SyntheticXhrSink } from './utils/xhr-override';
+import type { player } from './core/player';
+
 export interface MakeBilibiliGreatThanEverBeforeModule {
   name: string,
   description: string,
+  /** Initial state of the module's GM menu toggle until the user changes it. Defaults to `true`. */
+  defaultEnabled?: boolean,
   any?: (hook: MakeBilibiliGreatThanEverBeforeHook) => void,
   onVideo?: (hook: MakeBilibiliGreatThanEverBeforeHook) => void,
   onLive?: (hook: MakeBilibiliGreatThanEverBeforeHook) => void,
@@ -10,12 +15,6 @@ export interface MakeBilibiliGreatThanEverBeforeModule {
   onVideoOrBangumi?: (hook: MakeBilibiliGreatThanEverBeforeHook) => void
 }
 
-export interface XHRDetail {
-  method: string,
-  url: string | URL,
-  response: unknown | null,
-  lastResponseLength: number | null
-}
 export type XHROpenArgs =
   | [
     method: string,
@@ -40,6 +39,32 @@ export type OnBeforeFetchHook = (fetchArgs: FetchArgs) => FetchArgs | null | Res
  */
 export type OnXhrOpenHook = (xhrOpenArgs: XHROpenArgs, xhr: XMLHttpRequest) => XHROpenArgs | null;
 
+export interface XhrSendContext {
+  readonly xhr: XMLHttpRequest,
+  /** Upper-cased request method */
+  readonly method: string,
+  /** Absolute request URL after all `onXhrOpen` hooks */
+  readonly url: string,
+  /** The URL originally passed to `open()` */
+  readonly originalUrl: string | URL,
+  readonly async: boolean,
+  /** `open()` received a username or password */
+  readonly hasUrlCredentials: boolean,
+  /** Request headers set by the page, names lower-cased, in call order */
+  readonly headers: ReadonlyArray<readonly [name: string, value: string]>,
+  readonly body: Document | XMLHttpRequestBodyInit | null | undefined,
+  readonly responseType: XMLHttpRequestResponseType,
+  readonly withCredentials: boolean,
+  readonly timeout: number
+}
+
+export type XhrResponder = (response: SyntheticXhrSink) => void;
+/**
+ * Return a responder to answer the request with a synthetic response, or `null` to let the
+ * browser send it. Only `responseType === 'arraybuffer'` requests can be answered.
+ */
+export type OnXhrSendHook = (ctx: XhrSendContext) => XhrResponder | null;
+
 export interface MakeBilibiliGreatThanEverBeforeHook {
   addStyle(this: void, css: string): void,
   onBeforeFetch(this: void, cb: OnBeforeFetchHook): void,
@@ -47,5 +72,10 @@ export interface MakeBilibiliGreatThanEverBeforeHook {
   onXhrOpen(this: void, cb: OnXhrOpenHook): void,
   onAfterXhrOpen(this: void, cb: (xhr: XMLHttpRequest) => void): void,
   onXhrResponse(this: void, cb: (method: string, url: string | URL, response: unknown, xhr: XMLHttpRequest) => unknown): void,
-  onlyCallOnce(this: void, fn: () => void): void
+  onXhrSend(this: void, cb: OnXhrSendHook): void,
+  onlyCallOnce(this: void, fn: () => void): void,
+  /** The page's original `fetch`, bypassing every `onBeforeFetch` / `onResponse` hook */
+  readonly nativeFetch: typeof fetch,
+  /** The player request interceptor: media modules register their phases here */
+  readonly player: typeof player
 };

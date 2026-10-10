@@ -19,6 +19,9 @@ const userScriptMetaBlockConfig = {
   }
 };
 
+/** Tells debug builds apart: their saved playback metrics start over with each one */
+const debugBuildId = Date.now().toString(36);
+
 export default defineConfig(
   ([
     [
@@ -33,6 +36,8 @@ export default defineConfig(
     ([filename, debug]) => [
       {
         input: 'src/index.ts',
+        // xbits does not declare `sideEffects: false`, yet only debug code uses it: keep it out of release builds
+        treeshake: { moduleSideEffects: id => !id.includes('/node_modules/xbits/') },
         output: [{
           format: 'iife',
           file: `dist/${filename}.user.js`,
@@ -54,6 +59,7 @@ export default defineConfig(
             values: {
               'process.env.NODE_ENV': JSON.stringify('production'),
               'process.env.DEBUG': String(debug),
+              'process.env.BUILD_ID': debug ? JSON.stringify(debugBuildId) : 'undefined',
               'typeof window': JSON.stringify('object'),
               globalThis: 'unsafeWindow'
             }

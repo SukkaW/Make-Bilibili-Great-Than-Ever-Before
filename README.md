@@ -21,6 +21,7 @@ https://unpkg.com/make-bilibili-great-than-ever-before@latest/dist/make-bilibili
 - Force enable 4K Player even on low-end device (like Chromebook or Linux device)
 - Prevent Bilibili from saving money (on CR's coffins) by using cheap yet slow PCDN
 - Prevent Bilibili from saving money (on CR's coffins) by stealing your bandwidth through WebRTC P2P
+- Thread Ripper: split video segments into even smaller pieces and race them from downloading via many CDN hosts in parallel, to get maximum throughput and minimize buffering.
 - Remove Homepage Ads and style optimization
 - Story List Optimization
 - Fit player video width

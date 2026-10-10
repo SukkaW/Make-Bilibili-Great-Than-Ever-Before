@@ -8,6 +8,7 @@ const consoleWarn = unsafeWindow.console.warn;
 const consoleInfo = unsafeWindow.console.info;
 const consoleDebug = unsafeWindow.console.debug;
 const consoleTrace = unsafeWindow.console.trace;
+const consoleTable = unsafeWindow.console.table;
 
 const consoleGroup = unsafeWindow.console.group;
 const consoleGroupCollapsed = unsafeWindow.console.groupCollapsed;
@@ -26,5 +27,6 @@ export const logger = {
   },
   group: consoleGroup.bind(console, '[make-bilibili-great-than-ever-before]'),
   groupCollapsed: consoleGroupCollapsed.bind(console, '[make-bilibili-great-than-ever-before]'),
-  groupEnd: consoleGroupEnd.bind(console)
+  groupEnd: consoleGroupEnd.bind(console),
+  table: consoleTable.bind(console)
 };

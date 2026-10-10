@@ -1,4 +1,3 @@
-import { noop } from 'foxts/noop';
 import { logger } from './logger';
 import defuseSpyware from './modules/defuse-spyware';
 import enhanceLive from './modules/enhance-live';
@@ -11,12 +10,27 @@ import optimizeStory from './modules/optimize-story';
 import playerVideoFit from './modules/player-video-fit';
 import removeBlackBackdropFilter from './modules/remove-black-backdrop-filter';
 import removeUselessUrlParams from './modules/remove-useless-url-params';
+import threadRipper from './modules/thread-ripper';
 import useSystemFonts from './modules/use-system-fonts';
-import type { FetchArgs, OnXhrOpenHook, XHRDetail, XHROpenArgs, MakeBilibiliGreatThanEverBeforeHook, MakeBilibiliGreatThanEverBeforeModule, OnBeforeFetchHook } from './types';
+import type { FetchArgs, MakeBilibiliGreatThanEverBeforeHook, MakeBilibiliGreatThanEverBeforeModule, OnBeforeFetchHook } from './types';
 import disableAV1 from './modules/disable-av1';
 import defuseStorage from './modules/defuse-storage';
 import forceEnable4K from './modules/force-enable-4k';
 import { initModuleMenu } from './utils/module-menu';
+import { initPlayerInterceptor, player } from './core/player';
+import { PatchedXMLHttpRequest, xhrHooks } from './utils/xhr-override';
+import { disguiseAsNative } from './utils/fake-native-function';
+
+declare global {
+  const process: {
+    env: {
+      NODE_ENV: 'development' | 'production',
+      DEBUG?: 'true' | 'false',
+      /** Debug builds only: different for every build, see `rollup.config.ts` */
+      BUILD_ID?: string
+    }
+  };
+}
 
 ((unsafeWindow) => {
   const modules: MakeBilibiliGreatThanEverBeforeModule[] = [
@@ -34,15 +48,16 @@ import { initModuleMenu } from './utils/module-menu';
     playerVideoFit,
     removeBlackBackdropFilter,
     removeUselessUrlParams,
+    threadRipper,
     useSystemFonts
   ];
 
   const styles: string[] = [];
   const onBeforeFetchHooks = new Set<OnBeforeFetchHook>();
   const onResponseHooks = new Set<(response: Response, finalFetchArgs: FetchArgs, $fetch: typeof fetch) => Response | Promise<Response>>();
-  const onXhrOpenHooks = new Set<OnXhrOpenHook>();
-  const onAfterXhrOpenHooks = new Set<(xhr: XMLHttpRequest) => void>();
-  const onXhrResponseHooks = new Set<(method: string, url: string | URL, response: unknown, xhr: XMLHttpRequest) => unknown>();
+
+  /** Captured before fetch gets overridden below */
+  const nativeFetch: typeof fetch = unsafeWindow.fetch.bind(unsafeWindow);
 
   const fnWs = new WeakSet();
   function onlyCallOnce(fn: () => void) {
@@ -64,16 +79,24 @@ import { initModuleMenu } from './utils/module-menu';
       onResponseHooks.add(cb);
     },
     onXhrOpen(cb) {
-      onXhrOpenHooks.add(cb);
+      xhrHooks.open.add(cb);
     },
     onAfterXhrOpen(cb) {
-      onAfterXhrOpenHooks.add(cb);
+      xhrHooks.afterOpen.add(cb);
     },
     onXhrResponse(cb) {
-      onXhrResponseHooks.add(cb);
+      xhrHooks.response.add(cb);
     },
-    onlyCallOnce
+    onXhrSend(cb) {
+      xhrHooks.send.add(cb);
+    },
+    onlyCallOnce,
+    nativeFetch,
+    player
   };
+
+  /** Always on, whatever is enabled: no-p2p and thread-ripper are its phases */
+  initPlayerInterceptor(hook);
 
   const hostname = unsafeWindow.location.hostname;
   const pathname = unsafeWindow.location.pathname;
@@ -148,24 +171,25 @@ import { initModuleMenu } from './utils/module-menu';
   // Override fetch
   (($fetch) => {
     unsafeWindow.fetch = async function (...$fetchArgs) {
-      let abortFetch = false;
-      // eslint-disable-next-line no-useless-assignment -- the assignment can be skipped if doBeforeFetch throws an error
-      let fetchArgs: typeof $fetchArgs | null | Response = $fetchArgs;
+      /** Each hook gets the arguments the previous one returned */
+      let fetchArgs: typeof $fetchArgs = $fetchArgs;
       let mockResponse: Response | null = null;
+      let abortFetch = false;
       for (const onBeforeFetch of onBeforeFetchHooks) {
         try {
-          fetchArgs = onBeforeFetch($fetchArgs);
-          if (fetchArgs === null) {
+          const result = onBeforeFetch(fetchArgs);
+          if (result === null) {
             abortFetch = true;
             break;
           }
-          if ('body' in fetchArgs) {
+          if ('body' in result) {
             abortFetch = true;
-            mockResponse = fetchArgs;
+            mockResponse = result;
             break;
           }
+          fetchArgs = result;
         } catch (e) {
-          logger.error('Failed to replace fetcherArgs', e, { fetchArgs: $fetchArgs });
+          logger.error('Failed to replace fetcherArgs', e, { fetchArgs });
         }
       }
 
@@ -175,111 +199,18 @@ import { initModuleMenu } from './utils/module-menu';
         return mockResponse ?? new Response();
       }
 
-      let response = await Reflect.apply($fetch, this, $fetchArgs);
+      let response = await Reflect.apply($fetch, this, fetchArgs);
       for (const onResponse of onResponseHooks) {
         // eslint-disable-next-line no-await-in-loop -- hook
-        response = await onResponse(response, $fetchArgs, $fetch);
+        response = await onResponse(response, fetchArgs, $fetch);
       }
       return response;
     };
+    // Polyfills and feature detection test fetch for `[native code]` (e.g. Sentry's `isNativeFetch`)
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- only stringified
+    disguiseAsNative(unsafeWindow.fetch, $fetch);
   // eslint-disable-next-line @typescript-eslint/unbound-method -- cache original method
   })(unsafeWindow.fetch);
 
-  const xhrInstances = new WeakMap<XMLHttpRequest, XHRDetail>();
-
-  const XHRBefore = unsafeWindow.XMLHttpRequest.prototype;
-
-  unsafeWindow.XMLHttpRequest = class extends unsafeWindow.XMLHttpRequest {
-    open(...$args: XHROpenArgs) {
-      const method = $args[0];
-      const url = $args[1];
-      const xhrDetails: XHRDetail = { method, url, response: null, lastResponseLength: null };
-
-      let xhrArgs: XHROpenArgs | null = $args;
-
-      for (const onXhrOpen of onXhrOpenHooks) {
-        try {
-          if (xhrArgs === null) {
-            break;
-          }
-          xhrArgs = onXhrOpen(xhrArgs, this);
-        } catch (e) {
-          logger.error('Failed to replace P2P for XMLHttpRequest.prototype.open', e);
-        }
-      }
-
-      if (xhrArgs === null) {
-        logger.debug('XHR aborted', { $args });
-        this.send = noop;
-        this.setRequestHeader = noop;
-        return;
-      }
-
-      xhrInstances.set(this, xhrDetails);
-
-      super.open(...(xhrArgs as Parameters<XMLHttpRequest['open']>));
-
-      for (const onAfterXhrOpen of onAfterXhrOpenHooks) {
-        try {
-          onAfterXhrOpen(this);
-        } catch (e) {
-          logger.error('Failed to call onAfterXhrOpen', e);
-        }
-      }
-    }
-
-    get response() {
-      const originalResponse = super.response;
-      if (!xhrInstances.has(this)) {
-        return originalResponse;
-      }
-
-      const xhrDetails: XHRDetail = xhrInstances.get(this)!;
-
-      const responseLength = typeof originalResponse === 'string'
-        ? originalResponse.length
-        : null;
-
-      if (xhrDetails.lastResponseLength !== responseLength) {
-        xhrDetails.response = null;
-        xhrDetails.lastResponseLength = responseLength;
-      }
-      if (xhrDetails.response !== null) {
-        return xhrDetails.response;
-      }
-
-      let finalResponse = originalResponse;
-      for (const onXhrResponse of onXhrResponseHooks) {
-        try {
-          finalResponse = onXhrResponse(xhrDetails.method, xhrDetails.url, finalResponse, this);
-        } catch (e) {
-          logger.error('Failed to call onXhrResponse', e);
-        }
-      }
-
-      xhrDetails.response = finalResponse;
-
-      return finalResponse;
-    }
-
-    get responseText() {
-      const response = this.response;
-      return typeof response === 'string'
-        ? response
-        : super.responseText;
-    }
-  };
-
-  unsafeWindow.XMLHttpRequest.prototype.open.toString = function () {
-    return XHRBefore.open.toString();
-  };
-  unsafeWindow.XMLHttpRequest.prototype.send.toString = function () {
-    return XHRBefore.send.toString();
-  };
-  // unsafeWindow.XMLHttpRequest.prototype.getResponseHeader.toString = function () {
-  //   return XHRBefore.getResponseHeader.toString();
-  // };
-  // unsafeWindow.XMLHttpRequest.prototype.getAllResponseHeaders.toString = function () {
-  //   return XHRBefore.getAllResponseHeaders.toString();
-  // };
+  unsafeWindow.XMLHttpRequest = PatchedXMLHttpRequest;
 })(unsafeWindow);
