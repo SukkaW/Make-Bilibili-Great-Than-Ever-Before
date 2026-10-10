@@ -8,13 +8,16 @@
  *   best one; before any is measured, to any (the addresses Bilibili listed first). No host is
  *   trusted for what it is, the player's own included. Others only race.
  * - Races: a request in one piece starts on several hosts, and a piece without a first byte or
- *   stalled gets a racer elsewhere. Once both racers receive, the one behind goes.
+ *   stalled gets a racer elsewhere. Once both racers receive, the one behind goes, except one on a
+ *   host never measured before it has `PROBE_BYTES`, enough to measure the host.
+ * - Exploring: a host never measured is unknown, never ranked against measured ones. Racers that
+ *   explore go to such hosts, and each request with several pieces races one of them on one
  * - Endgame: with slots free and nothing waiting, the slowest piece's tail is split off to an
  *   owner, or a small one raced.
  * - Failure: retried on other hosts. Then, before any headers went to the page, the browser takes
  *   the request back; after, the player's own URL is the last resort.
- * - Warm-up: every playable representation's init segment and index, fetched as soon as a
- *   playinfo lists them.
+ * - Warm-up: every playable representation's init segment and index, fetched once the player asks
+ *   for anything of their video (the page fetches playinfos of other videos too), a few at a time.
  */
 
 import { clamp } from 'foxts/clamp';
@@ -71,10 +74,16 @@ const TICK_MS = 50;
 const MAX_EXTRA = 2;
 /** A racer this far behind the leader is only comparing bytes */
 const LAGGARD_BYTES = 64 * KiB;
+/** A racer on a host never measured runs at least this far, enough to measure the host */
+const PROBE_BYTES = 64 * KiB;
 /** A request waits this long for a warm-up still on its way, then fetches by itself */
 const WARMUP_WAIT_MS = 1500;
 /** Init segments and indexes kept, the oldest dropped first */
 const MAX_HEADERS = 64;
+/** Warm-up requests in flight at most: they must not take slots from what plays */
+const WARMUP_CAP = 4;
+/** Videos whose playinfo came, but the player has not asked for yet */
+const MAX_PENDING_WARMUPS = 16;
 /** A piece this small is about latency: it goes to the host expected to finish it first */
 const SMALL_PIECE = 256 * KiB;
 /**
@@ -82,8 +91,6 @@ const SMALL_PIECE = 256 * KiB;
  * one: on a slower host the whole request would wait for that piece
  */
 const ETA_BAND = 1.25;
-/** Fewer hosts than this may carry pieces: one piece of each request scouts a host never measured */
-const MIN_OWNERS = 4;
 /** Neither half of a split is smaller */
 const STEAL_MIN = 192 * KiB;
 /** Speed samples from shorter transfers are mostly round trip; below `FULL_SAMPLE`, cut short */
@@ -126,9 +133,7 @@ interface Segment {
   /** Waiting for a slot */
   queued: boolean,
   /** Last resort: the player's own URL */
-  final: boolean,
-  /** Goes to a host never measured, so more hosts can carry pieces */
-  scout: boolean
+  final: boolean
 }
 
 /** One fetch() of (the rest of) a piece from one host. Times are performance.now() ms, `0` = not yet */
@@ -161,7 +166,9 @@ interface Attempt {
   /** Recent (time, bytes) samples, for its current speed */
   readonly meter: Array<[time: number, bytes: number]>,
   /** Gaps between chunks, for its host's stall threshold */
-  readonly gaps: number[]
+  readonly gaps: number[],
+  /** Its host was never measured: it is not cut loose before `PROBE_BYTES`, so that it gets measured */
+  readonly probe: boolean
 }
 
 /** One range the player asked for, or a warm-up, answered by many attempts across hosts */
@@ -236,6 +243,11 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   const jobs = new Set<Job>();
   /** file key -> init segment and index, insertion ordered: the oldest goes first */
   const headers = new Map<string, CachedHeader>();
+  /**
+   * video key -> its files, from its latest playinfo: warmed up once the player asks for that video.
+   * The page fetches playinfos of other videos too (recommendations, previews)
+   */
+  const pendingWarmups = new Map<string, readonly MediaFile[]>();
   /** file key -> file size, as every host must agree on it */
   const totals = new Map<string, number>();
   /** `file key:start-end` -> until when the player's retry of a failed range goes to the browser */
@@ -305,15 +317,18 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     for (let i = 0; i < count; i++) {
       job.segments.push(segment(range.start + Math.floor(length * i / count), range.start + Math.floor(length * (i + 1) / count) - 1));
     }
-    // Few hosts may carry pieces: the last one scouts another (before any is measured, all do)
-    if (owners !== null && count > 1 && owners.size < MIN_OWNERS) {
-      job.segments[count - 1].scout = true;
-    }
     for (let i = 0; i < count; i++) {
       enqueue(job, job.segments[i]);
     }
     if (count === 1) {
       race(job);
+    } else if (job.segments[count - 1].attempts.size > 0 && mayDuplicate(job, now)) {
+      // One piece is raced on a host never measured, if any: that measures it, at no risk to the
+      // request (`chooseRacer`)
+      const seg = job.segments[count - 1];
+      if (eligible(job, seg, true, 0, null).some(option => !option.estimate.measured)) {
+        duplicate(job, seg, true);
+      }
     }
     return job;
   }
@@ -322,7 +337,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   function race(job: Job) {
     for (let i = 0, len = job.segments.length; i < len; i++) {
       for (let j = 1; j < RACE_WIDTH[job.cls]; j++) {
-        duplicate(job, job.segments[i]);
+        duplicate(job, job.segments[i], true);
       }
     }
   }
@@ -620,7 +635,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         const [job, seg] = queue[next];
         let target: HostOption | null = null;
         if (job.state === 'running' && seg.frontier <= seg.end) {
-          target = seg.final ? ownUrl(job) : pickHost(job, seg, false);
+          target = seg.final ? ownUrl(job) : pickHost(job, seg, null);
           if (target === null) {
             blocked.add(seg);
             continue;
@@ -639,15 +654,25 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
 
   /** Within `GLOBAL_CAP`, leaving room for what is urgent */
   function hasSlot(job: Job) {
-    return running.size < (job.cls === RELAXED ? GLOBAL_CAP - URGENT_RESERVE : GLOBAL_CAP);
+    if (job.cls !== RELAXED) {
+      return running.size < GLOBAL_CAP;
+    }
+    let warming = 0;
+    for (const att of running) {
+      if (att.job.cls === RELAXED) {
+        warming++;
+      }
+    }
+    return warming < WARMUP_CAP && running.size < GLOBAL_CAP - URGENT_RESERVE;
   }
 
   /**
    * Race a piece on a host not already on it, if one has room: over HTTP/2 one hung connection
-   * hangs every request to its host
+   * hangs every request to its host. To `explore`, a host never measured first; else (a rescue)
+   * the fastest measured one first
    */
-  function duplicate(job: Job, seg: Segment) {
-    const target = seg.extra < MAX_EXTRA && hasSlot(job) ? pickHost(job, seg, true) : null;
+  function duplicate(job: Job, seg: Segment, explore: boolean) {
+    const target = seg.extra < MAX_EXTRA && hasSlot(job) ? pickHost(job, seg, explore ? 'explore' : 'rescue') : null;
     if (target !== null) {
       seg.extra++;
       launch(job, seg, 'dup', target);
@@ -675,7 +700,8 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       bytes: 0,
       pos: seg.frontier,
       meter: [],
-      gaps: []
+      gaps: [],
+      probe: !estimate.measured
     };
     rotation++;
     busy.set(hostname, (busy.get(hostname) ?? 0) + 1);
@@ -798,7 +824,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
             newest = att;
           }
         }
-        if (waiting && newest !== null && isStuck(newest, now)) {
+        if (waiting && newest !== null && job.cls !== RELAXED && isStuck(newest, now)) {
           rescue(newest, now);
         }
         continue;
@@ -808,7 +834,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         continue;
       }
       // No first byte yet, or it stopped: another host may do better at once
-      if (isStuck(att, now)) {
+      if (job.cls !== RELAXED && isStuck(att, now)) {
         rescue(att, now);
       } else {
         const relief = needsRelief(att, now, typical.rate, () => alternativeOf(job, seg), slack);
@@ -831,7 +857,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   /** A racer on another host for a stuck request's piece */
   function rescue(att: Attempt, now: number) {
     const { job, seg } = att;
-    if (duplicate(job, seg) && process.env.DEBUG) {
+    if (duplicate(job, seg, false) && process.env.DEBUG) {
       debugNote(`${job.file.kind} ${job.range.start}-${job.range.end}: racer for a request on ${att.hostname} ${att.firstByteAt === 0 ? 'without a first byte' : 'gone silent'} after ${Math.round(now - att.startedAt)} ms`);
     }
   }
@@ -849,7 +875,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       }
     }
     for (const att of seg.attempts) {
-      if (att !== leader && (att.firstByteAt === 0 ? leader!.bytes >= LAGGARD_BYTES : att.pos < leader!.pos)) {
+      if (att !== leader && (!att.probe || att.bytes >= PROBE_BYTES) && (att.firstByteAt === 0 ? leader!.bytes >= LAGGARD_BYTES : att.pos < leader!.pos)) {
         abortAttempt(att, MediaOutcome.Canceled);
       }
     }
@@ -892,7 +918,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
    */
   function relieve(att: Attempt, now: number) {
     const { job, seg } = att;
-    const target = seg.end - seg.frontier + 1 >= 2 * STEAL_MIN && hasSlot(job) ? pickHost(job, seg, false) : null;
+    const target = seg.end - seg.frontier + 1 >= 2 * STEAL_MIN && hasSlot(job) ? pickHost(job, seg, null) : null;
     const at = target && splitPoint(seg, recentRate(att, now), target.estimate);
     if (target && at !== null) {
       const tail = segment(at, seg.end);
@@ -901,7 +927,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       launch(job, tail, 'primary', target);
       return true;
     }
-    if (mayDuplicate(job, now) && duplicate(job, seg)) {
+    if (mayDuplicate(job, now) && duplicate(job, seg, true)) {
       job.lastDuplicate = { at: now, rate: deliveredRate(job, now) };
       return true;
     }
@@ -911,26 +937,21 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   // ---- Hosts
 
   /**
-   * Where a piece goes. A primary only to a host that may carry it alone (`ownersOf`), relaxed work
-   * anywhere, to explore; a duplicate anywhere it is not running already. Hosts not tried since the
-   * piece last made progress first
+   * Where a piece goes. A primary (`racer` null) only to a host that may carry it alone
+   * (`ownersOf`), relaxed work anywhere, to explore; a racer anywhere it is not running already
+   * (`chooseRacer`). Hosts not tried since the piece last made progress first
    */
-  function pickHost(job: Job, seg: Segment, dup: boolean): HostOption | null {
+  function pickHost(job: Job, seg: Segment, racer: 'explore' | 'rescue' | null): HostOption | null {
     const bytes = seg.end - seg.frontier + 1;
-    // A scout goes to a host never measured, once; with none left, like any piece
-    let all = !dup && seg.scout ? eligible(job, seg, false, bytes, null).filter(option => !option.estimate.measured) : [];
-    if (all.length === 0) {
-      const owners = dup || job.cls === RELAXED ? null : ownersOf(job, bytes, performance.now());
-      all = eligible(job, seg, dup, bytes, owners);
-    } else {
-      seg.scout = false;
-    }
+    const dup = racer !== null;
+    const owners = dup || job.cls === RELAXED ? null : ownersOf(job, bytes, performance.now());
+    const all = eligible(job, seg, dup, bytes, owners);
     const untried = all.filter(option => !seg.tried.has(option.hostname));
     const options = untried.length === 0 ? all : untried;
     if (options.length === 0) {
       return null;
     }
-    const chosen = dup ? fastest(options) : choosePrimary(options, job, bytes);
+    const chosen = racer === null ? choosePrimary(options, job, bytes) : chooseRacer(options, racer === 'explore');
     if (seg.tried.has(chosen.hostname)) {
       // Every usable host was tried: a new round starts with this one
       seg.tried.clear();
@@ -938,10 +959,10 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     return chosen;
   }
 
-  /** The host a racer of the piece would go to */
+  /** The host a racer exploring for the piece would go to */
   function alternativeOf(job: Job, seg: Segment) {
     const options = eligible(job, seg, true, seg.end - seg.frontier + 1, null);
-    return options.length > 0 ? fastest(options).estimate : null;
+    return options.length > 0 ? chooseRacer(options, true).estimate : null;
   }
 
   function hasAlternative(job: Job, seg: Segment, now: number) {
@@ -1038,7 +1059,18 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
 
   // ---- Warm-up: every representation's init segment and index, ahead of the player
 
-  function warmUp(_json: object, files: readonly MediaFile[]) {
+  /** Kept until the player asks for the video */
+  function onPlayinfo(_json: object, files: readonly MediaFile[]) {
+    if (files.length > 0) {
+      pendingWarmups.delete(files[0].videoKey);
+      pendingWarmups.set(files[0].videoKey, files);
+      if (pendingWarmups.size > MAX_PENDING_WARMUPS) {
+        pendingWarmups.delete(pendingWarmups.keys().next().value!);
+      }
+    }
+  }
+
+  function warmUp(files: readonly MediaFile[]) {
     const now = performance.now();
     for (let i = 0, len = files.length; i < len; i++) {
       const file = files[i];
@@ -1102,7 +1134,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     sink.done(body);
   }
 
-  player.onPlayinfo(warmUp);
+  player.onPlayinfo(onPlayinfo);
 
   return {
     type: 'serve',
@@ -1129,6 +1161,20 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
           debugNote(`left to the browser, ${reason}: ${ctx.url}`);
         }
         return null;
+      }
+
+      // The player plays this video: every representation of the kind it asked for, and for video
+      // of the codec it uses (`codecs` from the playinfo), init segment and index, ahead of it
+      const pending = pendingWarmups.get(file.videoKey);
+      if (pending !== undefined) {
+        const alike: MediaFile[] = [];
+        const rest: MediaFile[] = [];
+        for (let i = 0, len = pending.length; i < len; i++) {
+          const other = pending[i];
+          (other.kind === file.kind && (other.kind === 'audio' || codecFamily(other) === codecFamily(file)) ? alike : rest).push(other);
+        }
+        pendingWarmups.set(file.videoKey, rest);
+        warmUp(alike);
       }
 
       const params: JobParams = {
@@ -1175,7 +1221,7 @@ function pieceCount(length: number, rate: number, ttfb: number, hosts: number): 
 }
 
 function segment(start: number, end: number): Segment {
-  return { end, frontier: start, attempts: new Set(), tries: 0, tried: new Set(), extra: 0, queued: false, final: false, scout: false };
+  return { end, frontier: start, attempts: new Set(), tries: 0, tried: new Set(), extra: 0, queued: false, final: false };
 }
 
 /**
@@ -1348,12 +1394,31 @@ function preferred(options: HostOption[]): HostOption[] {
   return moved.length > 0 ? moved : options;
 }
 
+/**
+ * A host never measured is unknown: its speed depends on whether its edge has the file and on the
+ * path to it, so it is never ranked against measured ones. To `explore`, such a host first (the
+ * addresses Bilibili listed, then the least busy); else the fastest measured one first
+ */
+function chooseRacer(options: HostOption[], explore: boolean): HostOption {
+  const untested = options.filter(option => !option.estimate.measured);
+  const measured = options.filter(option => option.estimate.measured);
+  if (untested.length > 0 && (explore || measured.length === 0)) {
+    return leastBusy(preferred(untested));
+  }
+  return fastest(measured);
+}
+
 function leastBusy(options: HostOption[]): HostOption {
   return options.reduce((best, option) => (option.active < best.active || (option.active === best.active && option.estimate.eta < best.estimate.eta) ? option : best));
 }
 
 function fastest(options: HostOption[]): HostOption {
   return options.reduce((best, option) => (option.estimate.eta < best.estimate.eta ? option : best));
+}
+
+/** `avc1`, `hev1` (`hvc1` alike), `av01`... */
+function codecFamily(file: MediaFile) {
+  return file.codecs.startsWith('hvc1') ? 'hev1' : file.codecs.slice(0, 4);
 }
 
 /** Skip what this browser won't play: `disable-av1` makes AV1 one of them */
