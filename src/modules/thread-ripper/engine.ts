@@ -12,8 +12,8 @@
  *   host never measured before it has `PROBE_BYTES`, enough to measure the host.
  * - Exploring: a host never measured is unknown, never ranked against measured ones. Racers that
  *   explore go to such hosts, and each request with several pieces races one of them on one
- * - Endgame: with slots free and nothing waiting, the slowest piece's tail is split off to an
- *   owner, or a small one raced.
+ * - Offload: with slots free and nothing waiting, the piece expected to finish last has its tail
+ *   cut off to the fastest measured host not on it, so that both finish together.
  * - Failure: retried on other hosts. Then, before any headers went to the page, the browser takes
  *   the request back; after, the player's own URL is the last resort.
  * - Warm-up: the init segment and index of every representation the player may switch to from
@@ -23,7 +23,7 @@
 
 import { clamp } from 'foxts/clamp';
 import { noop } from 'foxts/noop';
-import { p, p50 } from 'fast-percentile';
+import { p } from 'fast-percentile';
 import { ibytes, prettyBandwidth } from 'xbits';
 import { logger } from '../../logger';
 import type { MediaServePhase } from '../../core/player';
@@ -62,13 +62,6 @@ const MAX_TRIES = 6;
 const COMMIT_TIMEOUT_MS = 4800;
 /** Committed, but no byte arrived for this long: unfinished pieces go to the player's own URL */
 const JOB_STALL_MS = 8000;
-/**
- * A job delivering this many times the stream's bitrate gets no more speculative duplicates. High
- * on purpose: a saturated line shows itself when a duplicate raises nothing (`mayDuplicate`)
- */
-const HEDGE_HEADROOM = 8;
-/** The delivered rate is read over this long */
-const RATE_WINDOW_MS = 500;
 const TICK_MS = 50;
 /** Duplicates per piece at most */
 const MAX_EXTRA = 2;
@@ -105,8 +98,6 @@ const RELAXED = 2;
 const URGENCY_FACTOR = [0.7, 0.85, 2] as const;
 /** Hosts a request in one piece starts on */
 const RACE_WIDTH = [3, 2, 1] as const;
-/** How long after its start a job's bytes are wanted */
-const DEADLINE_MS = [0, 1500, 5000] as const;
 /** The gaps between an attempt's chunks are reported as their 90th percentile */
 const p90 = p(90);
 
@@ -174,10 +165,6 @@ interface Job {
   readonly length: number,
   readonly cls: typeof CRITICAL | typeof URGENT | typeof RELAXED,
   readonly createdAt: number,
-  /** When its bytes are wanted: past its start by how urgent it is */
-  readonly deadline: number,
-  /** Help it may get for pieces on pace but late anyway (`needsRelief`) */
-  readonly rescues: { straggler: number, stale: number },
   /** The player's own XHR timeout, `0` for none */
   readonly timeout: number,
   /** Every acceptable URL of the file, by host */
@@ -199,15 +186,7 @@ interface Job {
   total: number | null,
   /** Distinct bytes written: the XHR progress */
   covered: number,
-  lastProgressAt: number,
-  /** What the stream needs, bytes per ms: the file's bitrate from the playinfo */
-  readonly requiredRate: number,
-  /** Recent (time, covered) samples: the delivered rate */
-  readonly meter: Array<[time: number, covered: number]>,
-  /** The last speculative duplicate: when, and the delivered rate then */
-  lastDuplicate: { at: number, rate: number } | null,
-  /** A duplicate did not raise the delivered rate: the line is full */
-  saturated: boolean
+  lastProgressAt: number
 }
 
 type JobParams = Pick<Job, 'file' | 'range' | 'served' | 'cls' | 'timeout' | 'requested'> & { candidates: readonly MediaCandidate[] };
@@ -266,8 +245,6 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       ...params,
       length,
       createdAt: now,
-      deadline: now + DEADLINE_MS[params.cls],
-      rescues: { straggler: 0, stale: 0 },
       candidates: byHost(params.candidates),
       buffer,
       bytes: new unsafeWindow.Uint8Array(buffer),
@@ -278,12 +255,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       committed: false,
       total: totals.get(file.key) ?? null,
       covered: 0,
-      lastProgressAt: now,
-      // Bits per second to bytes per millisecond
-      requiredRate: file.bandwidth / 8000,
-      meter: [[now, 0]],
-      lastDuplicate: null,
-      saturated: false
+      lastProgressAt: now
     };
     jobs.add(job);
     if (sink) {
@@ -298,9 +270,6 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     const typical = model.typicalSpeed(file);
     const owners = ownersOf(job, Math.min(length, MiB), now);
     const count = pieceCount(length, typical.rate, typical.ttfb, owners?.size ?? 1);
-    // One rescue of each kind per four pieces, up to four
-    job.rescues.straggler = Math.min(4, Math.ceil(count / 4));
-    job.rescues.stale = job.rescues.straggler;
     for (let i = 0; i < count; i++) {
       job.segments.push(segment(range.start + Math.floor(length * i / count), range.start + Math.floor(length * (i + 1) / count) - 1));
     }
@@ -309,7 +278,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     }
     if (count === 1) {
       race(job);
-    } else if (job.segments[count - 1].attempts.size > 0 && mayDuplicate(job, now)) {
+    } else if (job.segments[count - 1].attempts.size > 0) {
       // One piece is raced on a host never measured, if any: that measures it, at no risk to the
       // request (`chooseRacer`)
       const seg = job.segments[count - 1];
@@ -645,7 +614,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
    * the fastest measured one first
    */
   function duplicate(job: Job, seg: Segment, explore: boolean) {
-    const target = seg.extra < MAX_EXTRA && hasSlot(job) ? pickHost(job, seg, explore ? 'explore' : 'rescue') : null;
+    const target = seg.extra < MAX_EXTRA && hasSlot(job) ? pickHost(job, seg, explore ? 'explore' : 'fastest') : null;
     if (target !== null) {
       seg.extra++;
       launch(job, seg, 'dup', target);
@@ -739,7 +708,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         tickJob(job, now);
       }
       if (queue.length === 0 && running.size < GLOBAL_CAP) {
-        endgame(now);
+        offload(now);
       }
     } catch (e) {
       logger.error('[thread-ripper] tick failed', e);
@@ -779,8 +748,6 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       return;
     }
 
-    const typical = model.typicalSpeed(job.file);
-    const slack = hedgeSlack(typical.ttfb);
     for (let i = 0, len = job.segments.length; i < len; i++) {
       const seg = job.segments[i];
       if (seg.frontier > seg.end) {
@@ -803,18 +770,9 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         continue;
       }
       const att = seg.attempts.values().next().value;
-      if (att?.abortReason !== null) {
-        continue;
-      }
       // No first byte yet, or it stopped: another host may do better at once
-      if (job.cls !== RELAXED && isStuck(att, now)) {
+      if (att?.abortReason === null && job.cls !== RELAXED && isStuck(att, now)) {
         rescue(att, now);
-      } else {
-        const relief = needsRelief(att, now, typical.rate, () => alternativeOf(job, seg), slack);
-        const started = relief !== null && relieve(att, now);
-        if (started && relief !== 'help') {
-          job.rescues[relief]--;
-        }
       }
     }
   }
@@ -854,67 +812,47 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     }
   }
 
-  /** Free slots and nothing waiting: the piece with the most time left is relieved */
-  function endgame(now: number) {
+  /**
+   * Free slots and nothing waiting: the piece expected to finish last holds its whole request, so
+   * its tail goes to the fastest measured host not on it, cut so that both finish together
+   */
+  function offload(now: number) {
     let slowest: Attempt | null = null;
     let slowestMs = 0;
-    const etas: number[] = [];
     for (const att of running) {
       const { job, seg } = att;
-      if (job.state !== 'running' || seg.attempts.size !== 1 || att.abortReason !== null || seg.frontier > seg.end) {
+      if (job.state !== 'running' || seg.attempts.size !== 1 || att.abortReason !== null || att.firstByteAt === 0 || seg.frontier > seg.end) {
         continue;
       }
       const rate = recentRate(att, now);
-      const ms = rate > 0 ? (seg.end - seg.frontier + 1) / rate : Infinity;
-      etas.push(ms);
-      if (slowest === null || ms > slowestMs) {
+      const ms = (seg.end - seg.frontier + 1) / rate;
+      if (rate > 0 && (slowest === null || ms > slowestMs)) {
         slowest = att;
         slowestMs = ms;
       }
     }
-    // A piece too small to cut is raced only when well behind the others, or late
-    if (
-      slowest !== null && (
-        slowest.seg.end - slowest.seg.frontier + 1 >= 2 * STEAL_MIN
-        || slowestMs > Math.max(300, 1.3 * p50(etas))
-        || now + slowestMs > slowest.job.deadline - hedgeSlack(model.typicalSpeed(slowest.job.file).ttfb)
-      )
-    ) {
-      relieve(slowest, now);
+    if (slowest === null) {
+      return;
     }
-  }
-
-  /**
-   * A piece's tail goes to an owner, cut so both finish together; one that cannot be cut is raced
-   *
-   * @returns whether help started
-   */
-  function relieve(att: Attempt, now: number) {
-    const { job, seg } = att;
-    const target = seg.end - seg.frontier + 1 >= 2 * STEAL_MIN && hasSlot(job) ? pickHost(job, seg, null) : null;
-    const at = target && splitPoint(seg, recentRate(att, now), target.estimate);
+    const { job, seg } = slowest;
+    const target = seg.end - seg.frontier + 1 >= 2 * STEAL_MIN && hasSlot(job) ? pickHost(job, seg, 'fastest') : null;
+    const at = target && splitPoint(seg, recentRate(slowest, now), target.estimate);
     if (target && at !== null) {
       const tail = segment(at, seg.end);
       seg.end = at - 1;
       job.segments.push(tail);
       launch(job, tail, 'primary', target);
-      return true;
     }
-    if (mayDuplicate(job, now) && duplicate(job, seg, true)) {
-      job.lastDuplicate = { at: now, rate: deliveredRate(job, now) };
-      return true;
-    }
-    return false;
   }
 
   // ---- Hosts
 
   /**
    * Where a piece goes. A primary (`racer` null) only to a host that may carry it alone
-   * (`ownersOf`), relaxed work anywhere, to explore; a racer anywhere it is not running already
-   * (`chooseRacer`). Hosts not tried since the piece last made progress first
+   * (`ownersOf`), relaxed work anywhere, to explore; a racer, or a tail, anywhere it is not running
+   * already (`chooseRacer`). Hosts not tried since the piece last made progress first
    */
-  function pickHost(job: Job, seg: Segment, racer: 'explore' | 'rescue' | null): HostOption | null {
+  function pickHost(job: Job, seg: Segment, racer: 'explore' | 'fastest' | null): HostOption | null {
     const bytes = seg.end - seg.frontier + 1;
     const dup = racer !== null;
     const owners = dup || job.cls === RELAXED ? null : ownersOf(job, bytes, performance.now());
@@ -930,12 +868,6 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       seg.tried.clear();
     }
     return chosen;
-  }
-
-  /** The host a racer exploring for the piece would go to */
-  function alternativeOf(job: Job, seg: Segment) {
-    const options = eligible(job, seg, true, seg.end - seg.frontier + 1, null);
-    return options.length > 0 ? chooseRacer(options, true).estimate : null;
   }
 
   function hasAlternative(job: Job, seg: Segment, now: number) {
@@ -1178,29 +1110,10 @@ function writeChunk(job: Job, att: Attempt, chunk: Uint8Array): 'ok' | 'overrun'
     job.covered += fresh.byteLength;
     seg.frontier = pos + usable;
     seg.tried.clear();
-    const now = performance.now();
-    job.lastProgressAt = now;
-    // One sample at or before the window's start stays, see `deliveredRate`
-    const { meter } = job;
-    meter.push([now, job.covered]);
-    let stale = 0;
-    while (stale < meter.length - 1 && meter[stale + 1][0] <= now - RATE_WINDOW_MS) {
-      stale++;
-    }
-    meter.splice(0, stale);
+    job.lastProgressAt = performance.now();
   }
   att.pos = pos + usable;
   return usable < chunk.byteLength ? 'overrun' : 'ok';
-}
-
-/** Bytes written for the job over the last `RATE_WINDOW_MS`, per ms */
-function deliveredRate(job: Job, now: number) {
-  const { meter } = job;
-  let base = meter[0];
-  for (let i = 1, len = meter.length; i < len && meter[i][0] <= now - RATE_WINDOW_MS; i++) {
-    base = meter[i];
-  }
-  return (job.covered - base[1]) / Math.max(1, now - base[0]);
 }
 
 /** An attempt's speed over the last half second, or since its first byte when the history is short */
@@ -1217,58 +1130,6 @@ function recentRate(att: Attempt, now: number): number {
     }
   }
   return att.firstByteAt === 0 || now <= att.firstByteAt ? 0 : (att.bytes - att.firstChunkBytes) / (now - att.firstByteAt);
-}
-
-/**
- * Whether a receiving piece with one attempt needs relief: none while it finishes in time (by the
- * job's deadline less `slack`). Then, if it is slower than requests usually are, or than the host a
- * racer would go to (or that host was never measured); or, spending one of the job's rescues, if it
- * crawls (`straggler`) or will miss the deadline anyway (`stale`)
- */
-function needsRelief(att: Attempt, now: number, typicalRate: number, alternativeOf: () => HostEstimate | null, slack: number): 'help' | 'straggler' | 'stale' | null {
-  const { job, seg } = att;
-  if (now - att.firstByteAt < 250) {
-    return null;
-  }
-  const rate = recentRate(att, now);
-  const eta = now + (seg.end - seg.frontier + 1) / rate;
-  if (eta <= job.deadline - slack) {
-    return null;
-  }
-  if (eta >= job.deadline && rate < 0.5 * typicalRate && eta - now >= 500 && job.rescues.straggler > 0) {
-    return 'straggler';
-  }
-  if (rate < 0.6 * typicalRate) {
-    return 'help';
-  }
-  const alternative = alternativeOf();
-  if (alternative !== null && (!alternative.measured || alternative.rate > 1.5 * rate)) {
-    return 'help';
-  }
-  return eta > job.deadline && job.rescues.stale > 0 ? 'stale' : null;
-}
-
-/** Finish this much before the deadline to count as in time */
-function hedgeSlack(typicalTtfb: number) {
-  return clamp(2 * typicalTtfb, 500, 1500);
-}
-
-/**
- * A speculative duplicate takes bandwidth from the pieces that matter: none while the job already
- * delivers `HEDGE_HEADROOM` times what the stream needs, none for a job whose last duplicate raised
- * nothing (the line is full), and the last one gets `RATE_WINDOW_MS` to show before the next
- */
-function mayDuplicate(job: Job, now: number) {
-  const rate = deliveredRate(job, now);
-  const last = job.lastDuplicate;
-  if (job.saturated || rate >= HEDGE_HEADROOM * job.requiredRate || (last !== null && now - last.at < RATE_WINDOW_MS)) {
-    return false;
-  }
-  if (last !== null && last.rate > 0 && rate <= last.rate) {
-    job.saturated = true;
-    return false;
-  }
-  return true;
 }
 
 /**
