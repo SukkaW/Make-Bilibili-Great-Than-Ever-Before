@@ -15,6 +15,10 @@ const uselessUrlParams = [
   /^share/,
   /^spm/
 ];
+const copyrightPaths = new Set([
+  '/pc/community/copyright/role',
+  '/v/copyright/intro'
+]);
 
 const removeUselessUrlParams: MakeBilibiliGreatThanEverBeforeModule = {
   name: 'remove-useless-url-params',
@@ -47,6 +51,9 @@ function removeTracking(url: string | URL | null | undefined) {
     const keys = Array.from(url.searchParams.keys());
     for (let i = 0, len = keys.length; i < len; i++) {
       const key = keys[i];
+      if (key === 'mid' && url.hostname === 'www.bilibili.com' && copyrightPaths.has(url.pathname)) {
+        continue;
+      }
       for (let j = 0, len = uselessUrlParams.length; j < len; j++) {
         const item = uselessUrlParams[j];
         if (typeof item === 'string') {
