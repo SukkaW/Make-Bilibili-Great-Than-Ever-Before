@@ -16,13 +16,13 @@
  *   owner, or a small one raced.
  * - Failure: retried on other hosts. Then, before any headers went to the page, the browser takes
  *   the request back; after, the player's own URL is the last resort.
- * - Warm-up: every playable representation's init segment and index, fetched once the player asks
- *   for anything of their video (the page fetches playinfos of other videos too), a few at a time.
+ * - Warm-up: the init segment and index of every representation the player may switch to from
+ *   what it asks for (same kind, for video same codec), fetched ahead; a request for them is served
+ *   from the copy once it is there.
  */
 
 import { clamp } from 'foxts/clamp';
-import { falseFn, noop } from 'foxts/noop';
-import { wait } from 'foxts/wait';
+import { noop } from 'foxts/noop';
 import { p, p50 } from 'fast-percentile';
 import { ibytes, prettyBandwidth } from 'xbits';
 import { logger } from '../../logger';
@@ -76,14 +76,8 @@ const MAX_EXTRA = 2;
 const LAGGARD_BYTES = 64 * KiB;
 /** A racer on a host never measured runs at least this far, enough to measure the host */
 const PROBE_BYTES = 64 * KiB;
-/** A request waits this long for a warm-up still on its way, then fetches by itself */
-const WARMUP_WAIT_MS = 1500;
 /** Init segments and indexes kept, the oldest dropped first */
 const MAX_HEADERS = 64;
-/** Warm-up requests in flight at most: they must not take slots from what plays */
-const WARMUP_CAP = 4;
-/** Videos whose playinfo came, but the player has not asked for yet */
-const MAX_PENDING_WARMUPS = 16;
 /** A piece this small is about latency: it goes to the host expected to finish it first */
 const SMALL_PIECE = 256 * KiB;
 /**
@@ -175,11 +169,13 @@ interface Attempt {
 interface Job {
   readonly file: MediaFile,
   readonly range: ByteRange,
+  /** What of `range` the player asked for: all of it, unless a request for the init segment or index fetches both */
+  readonly served: ByteRange,
   readonly length: number,
-  cls: typeof CRITICAL | typeof URGENT | typeof RELAXED,
+  readonly cls: typeof CRITICAL | typeof URGENT | typeof RELAXED,
   readonly createdAt: number,
-  /** When its bytes are wanted: past its start by how urgent it is. Lowered when the player asks for a warm-up */
-  deadline: number,
+  /** When its bytes are wanted: past its start by how urgent it is */
+  readonly deadline: number,
   /** Help it may get for pieces on pace but late anyway (`needsRelief`) */
   readonly rescues: { straggler: number, stale: number },
   /** The player's own XHR timeout, `0` for none */
@@ -214,7 +210,7 @@ interface Job {
   saturated: boolean
 }
 
-type JobParams = Pick<Job, 'file' | 'range' | 'cls' | 'timeout' | 'requested'> & { candidates: readonly MediaCandidate[] };
+type JobParams = Pick<Job, 'file' | 'range' | 'served' | 'cls' | 'timeout' | 'requested'> & { candidates: readonly MediaCandidate[] };
 
 /** A host that could take a piece, with the URL it would get */
 interface HostOption {
@@ -228,14 +224,10 @@ interface HostOption {
 /** A file's init segment and index, fetched ahead of the player */
 interface CachedHeader {
   readonly range: ByteRange,
+  /** `null` while the warm-up runs, and for good if it failed */
   bytes: Uint8Array | null,
   total: number | null,
-  contentType: string,
-  /** Settles when the fetch is over: `true` with bytes */
-  readonly ready: Promise<boolean>,
-  settle(this: void, ok: boolean): void,
-  /** The warm-up fetching it */
-  readonly job: Job
+  contentType: string
 }
 
 export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['player'], nativeFetch: typeof fetch): MediaServePhase {
@@ -243,11 +235,6 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   const jobs = new Set<Job>();
   /** file key -> init segment and index, insertion ordered: the oldest goes first */
   const headers = new Map<string, CachedHeader>();
-  /**
-   * video key -> its files, from its latest playinfo: warmed up once the player asks for that video.
-   * The page fetches playinfos of other videos too (recommendations, previews)
-   */
-  const pendingWarmups = new Map<string, readonly MediaFile[]>();
   /** file key -> file size, as every host must agree on it */
   const totals = new Map<string, number>();
   /** `file key:start-end` -> until when the player's retry of a failed range goes to the browser */
@@ -362,15 +349,14 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       debugNote(`${job.file.kind} ${job.range.start}-${job.range.end} (${ibytes(job.length)}) in ${Math.round(ms)} ms at ${prettyBandwidth(job.length * 8000 / ms)} (stream ${prettyBandwidth(job.file.bandwidth)}), ${pieces} piece${pieces === 1 ? '' : 's'}`);
     }
     if (job.sink) {
-      job.sink.done(job.buffer);
-      return;
+      const { served, range } = job;
+      job.sink.done(served.start === range.start && served.end === range.end ? job.buffer : job.buffer.slice(served.start - range.start, served.end - range.start + 1));
     }
     const header = headers.get(job.file.key);
-    if (header?.bytes === null) {
+    if (header?.bytes === null && job.range.start === header.range.start && job.range.end === header.range.end) {
       header.bytes = new Uint8Array(job.buffer);
       header.total = job.total;
       header.contentType = job.contentType;
-      header.settle(true);
     }
   }
 
@@ -379,12 +365,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     const now = performance.now();
     stop(job, false);
     if (!job.sink) {
-      // A warm-up: nothing to serve from, the request fetches it the normal way
-      const header = headers.get(job.file.key);
-      if (header?.bytes === null) {
-        headers.delete(job.file.key);
-        header.settle(false);
-      }
+      // A warm-up: its entry stays empty, and requests fetch the normal way
       return;
     }
     recentFailures = recentFailures.filter(at => now - at < 60 * 1000);
@@ -398,7 +379,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       logger.warn(`[thread-ripper] handed back to the browser: ${reason}`, { url: job.requested.href, range: job.range });
       return;
     }
-    nativeRetry.set(`${job.file.key}:${job.range.start}-${job.range.end}`, now + NATIVE_RETRY_MS);
+    nativeRetry.set(`${job.file.key}:${job.served.start}-${job.served.end}`, now + NATIVE_RETRY_MS);
     logger.error(`[thread-ripper] failed: ${reason}`, { url: job.requested.href, range: job.range });
     job.sink.error();
   }
@@ -508,9 +489,9 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         responseHeaders.push([name, value]);
       }
     });
-    responseHeaders.push(['content-length', String(job.length)]);
+    responseHeaders.push(['content-length', String(byteRangeLength(job.served))]);
     if (job.total !== null) {
-      responseHeaders.push(['content-range', `bytes ${job.range.start}-${job.range.end}/${job.total}`]);
+      responseHeaders.push(['content-range', `bytes ${job.served.start}-${job.served.end}/${job.total}`]);
     }
     job.sink.headersReceived(206, responseHeaders, response.statusText);
   }
@@ -530,8 +511,9 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       }
       if (job.segments.every(piece => piece.frontier > piece.end)) {
         complete(job);
-      } else {
-        job.sink?.progress(job.covered, job.length);
+      } else if (job.sink) {
+        const served = byteRangeLength(job.served);
+        job.sink.progress(Math.min(job.covered, served), served);
       }
     }
     return result;
@@ -654,16 +636,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
 
   /** Within `GLOBAL_CAP`, leaving room for what is urgent */
   function hasSlot(job: Job) {
-    if (job.cls !== RELAXED) {
-      return running.size < GLOBAL_CAP;
-    }
-    let warming = 0;
-    for (const att of running) {
-      if (att.job.cls === RELAXED) {
-        warming++;
-      }
-    }
-    return warming < WARMUP_CAP && running.size < GLOBAL_CAP - URGENT_RESERVE;
+    return running.size < (job.cls === RELAXED ? GLOBAL_CAP - URGENT_RESERVE : GLOBAL_CAP);
   }
 
   /**
@@ -1057,72 +1030,48 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     return active < HOST_CAP ? { hostname, candidate: job.requested, estimate: model.estimate(hostname, job.file, 0), active } : null;
   }
 
-  // ---- Warm-up: every representation's init segment and index, ahead of the player
+  // ---- Warm-up: the init segment and index of what the player may switch to, ahead of it
 
-  /** Kept until the player asks for the video */
-  function onPlayinfo(_json: object, files: readonly MediaFile[]) {
-    if (files.length > 0) {
-      pendingWarmups.delete(files[0].videoKey);
-      pendingWarmups.set(files[0].videoKey, files);
-      if (pendingWarmups.size > MAX_PENDING_WARMUPS) {
-        pendingWarmups.delete(pendingWarmups.keys().next().value!);
-      }
-    }
-  }
-
-  function warmUp(files: readonly MediaFile[]) {
+  /** Every representation of the file's video of its kind, and for video of its codec (`codecs` from the playinfo) */
+  function warmUp(file: MediaFile) {
     const now = performance.now();
+    const files = player.filesOf(file.videoKey);
     for (let i = 0, len = files.length; i < len; i++) {
-      const file = files[i];
-      if (file.segmentBase === null || headers.has(file.key) || !isPlayable(file)) {
+      const other = files[i];
+      if (
+        other.kind !== file.kind || other.segmentBase === null || headers.has(other.key)
+        || (other.kind === 'video' && codecFamily(other) !== codecFamily(file))
+      ) {
         continue;
       }
-      const candidates = player.candidates(file);
+      const candidates = player.candidates(other);
       // Its own last resort, as the browser would pick it
-      const requested = defaultCandidate(candidates, file, now);
+      const requested = defaultCandidate(candidates, other, now);
       if (requested === null) {
         continue;
       }
-      const range: ByteRange = { start: 0, end: file.segmentBase.index.end };
-      let settle: (ok: boolean) => void = noop;
-      const ready = new Promise<boolean>((resolve) => {
-        settle = resolve;
-      });
-      // Nothing ends synchronously: the entry is there before the job is over
-      const job = start({ file, range, cls: RELAXED, timeout: 0, candidates, requested }, null);
-      headers.set(file.key, { range, bytes: null, total: null, contentType: '', ready, settle, job });
-      if (headers.size > MAX_HEADERS) {
-        headers.delete(headers.keys().next().value!);
-      }
+      const range: ByteRange = { start: 0, end: other.segmentBase.index.end };
+      addHeader(other.key, range);
+      start({ file: other, range, served: range, cls: RELAXED, timeout: 0, candidates, requested }, null);
+    }
+  }
+
+  /** An empty entry, filled by the job fetching exactly `range` */
+  function addHeader(key: string, range: ByteRange) {
+    headers.set(key, { range, bytes: null, total: null, contentType: '' });
+    if (headers.size > MAX_HEADERS) {
+      headers.delete(headers.keys().next().value!);
     }
   }
 
   /** A request inside the init and index fetched ahead: served from them, as a copy */
-  async function serveHeader(header: CachedHeader, params: JobParams, sink: SyntheticXhrSink) {
-    const { file, range } = params;
-    const waitedFrom = performance.now();
-    const { job } = header;
-    // The player asks for what a warm-up is still fetching: it becomes critical, and is raced
-    if (job.cls !== CRITICAL && job.state === 'running') {
-      job.cls = CRITICAL;
-      job.deadline = waitedFrom;
-      race(job);
-    }
-    // `ready` resolves true exactly when the bytes are there
-    const ok = header.bytes !== null || await Promise.race([header.ready, wait(WARMUP_WAIT_MS).then(falseFn)]);
-    if (sink.signal.aborted) {
-      return;
-    }
+  function serveHeader(header: CachedHeader, bytes: Uint8Array, file: MediaFile, range: ByteRange, sink: SyntheticXhrSink) {
     if (process.env.DEBUG) {
-      debugNote(`${file.kind} ${range.start}-${range.end}: ${ok ? 'served from the warm-up' : 'the warm-up did not come'} after ${Math.round(performance.now() - waitedFrom)} ms`);
-    }
-    if (!ok) {
-      start(params, sink);
-      return;
+      debugNote(`${file.kind} ${range.start}-${range.end}: served from the warm-up`);
     }
     const length = byteRangeLength(range);
     const body = new unsafeWindow.ArrayBuffer(length);
-    new unsafeWindow.Uint8Array(body).set(header.bytes!.subarray(range.start - header.range.start, range.end - header.range.start + 1));
+    new unsafeWindow.Uint8Array(body).set(bytes.subarray(range.start - header.range.start, range.end - header.range.start + 1));
     const responseHeaders: Array<[string, string]> = [
       ['content-type', header.contentType || `${file.kind}/mp4`],
       ['content-length', String(length)]
@@ -1133,8 +1082,6 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     sink.headersReceived(206, responseHeaders, '');
     sink.done(body);
   }
-
-  player.onPlayinfo(onPlayinfo);
 
   return {
     type: 'serve',
@@ -1163,41 +1110,21 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         return null;
       }
 
-      // The player plays this video: every representation of the kind it asked for, and for video
-      // of the codec it uses (`codecs` from the playinfo), init segment and index, ahead of it
-      const pending = pendingWarmups.get(file.videoKey);
-      if (pending !== undefined) {
-        const alike: MediaFile[] = [];
-        const rest: MediaFile[] = [];
-        for (let i = 0, len = pending.length; i < len; i++) {
-          const other = pending[i];
-          (other.kind === file.kind && (other.kind === 'audio' || codecFamily(other) === codecFamily(file)) ? alike : rest).push(other);
-        }
-        pendingWarmups.set(file.videoKey, rest);
-        warmUp(alike);
-      }
-
-      const params: JobParams = {
-        file,
-        range,
-        // The initialization segment and the index come first: nothing plays without them
-        cls: file.segmentBase !== null && range.end <= file.segmentBase.index.end ? CRITICAL : URGENT,
-        timeout: ctx.timeout,
-        candidates,
-        requested
-      };
+      // The initialization segment and the index come first: nothing plays without them
+      const whole = file.segmentBase !== null && range.end <= file.segmentBase.index.end ? { start: 0, end: file.segmentBase.index.end } : null;
       const header = headers.get(file.key);
-      if (header && range.start >= header.range.start && range.end <= header.range.end) {
-        return (sink) => {
-          serveHeader(header, params, sink).catch((e: unknown) => {
-            logger.error('[thread-ripper] failed to serve from the warm-up', e);
-            if (!sink.fallbackToNative()) {
-              sink.error();
-            }
-          });
-        };
+      const bytes = header?.bytes ?? null;
+      if (header !== undefined && bytes !== null && range.start >= header.range.start && range.end <= header.range.end) {
+        return sink => serveHeader(header, bytes, file, range, sink);
       }
-      return sink => start(params, sink);
+      // The first request for the init segment or the index fetches both, and the other is served from the copy
+      const fetched = header === undefined && whole !== null ? whole : range;
+      if (fetched !== range) {
+        addHeader(file.key, fetched);
+      }
+      // The player plays this video: what it may switch to is fetched ahead of it
+      warmUp(file);
+      return sink => start({ file, range: fetched, served: range, cls: whole === null ? URGENT : CRITICAL, timeout: ctx.timeout, candidates, requested }, sink);
     }
   };
 }
@@ -1419,18 +1346,6 @@ function fastest(options: HostOption[]): HostOption {
 /** `avc1`, `hev1` (`hvc1` alike), `av01`... */
 function codecFamily(file: MediaFile) {
   return file.codecs.startsWith('hvc1') ? 'hev1' : file.codecs.slice(0, 4);
-}
-
-/** Skip what this browser won't play: `disable-av1` makes AV1 one of them */
-function isPlayable(file: MediaFile) {
-  if (!('MediaSource' in unsafeWindow) || !file.mimeType) {
-    return true;
-  }
-  try {
-    return unsafeWindow.MediaSource.isTypeSupported(file.codecs ? `${file.mimeType}; codecs="${file.codecs}"` : file.mimeType);
-  } catch {
-    return true;
-  }
 }
 
 function byHost(candidates: readonly MediaCandidate[]) {

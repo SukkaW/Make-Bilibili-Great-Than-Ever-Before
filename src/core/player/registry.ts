@@ -33,7 +33,6 @@ export interface MediaFile {
   readonly videoKey: string,
   readonly kind: MediaKind,
   readonly codecs: string,
-  readonly mimeType: string,
   /** Bits per second */
   readonly bandwidth: number,
   readonly segmentBase: { readonly init: ByteRange, readonly index: ByteRange } | null,
@@ -49,6 +48,8 @@ export const upgcxcodeHosts = new Set<string>();
  * so the old addresses keep working until their deadline, and the new ones are fresher
  */
 const filesByPath = flru<MediaFile>(400);
+/** video key -> its files, as listed by its newest playinfo */
+const filesByVideo = flru<readonly MediaFile[]>(32);
 let fileCount = 0;
 let videoCount = 0;
 
@@ -85,13 +86,11 @@ export function ingestPlayinfo(json: object, meta: string): MediaFile[] | null {
   const files: MediaFile[] = [];
   for (let i = 0, len = listed.length; i < len; i++) {
     const { kind, representation, addresses, known } = listed[i];
-    const mimeType = representation.mimeType ?? representation.mime_type;
     const file: MediaFile = {
       key: known?.key ?? `file-${++fileCount}`,
       videoKey,
       kind,
       codecs: typeof representation.codecs === 'string' ? representation.codecs : '',
-      mimeType: typeof mimeType === 'string' ? mimeType : '',
       bandwidth: Number(representation.bandwidth) || 0,
       segmentBase: segmentBaseOf(representation),
       addresses
@@ -101,6 +100,7 @@ export function ingestPlayinfo(json: object, meta: string): MediaFile[] | null {
       filesByPath.set(addresses[j].pathname, file);
     }
   }
+  filesByVideo.set(videoKey, files);
 
   logger.info('CDN URLs extracted', { meta });
 
@@ -110,6 +110,10 @@ export function ingestPlayinfo(json: object, meta: string): MediaFile[] | null {
 /** As listed by the newest playinfo: the freshest signed addresses, whichever one was requested */
 export function findFile(address: MediaAddress): MediaFile | null {
   return filesByPath.get(address.pathname) ?? null;
+}
+
+export function filesOf(videoKey: string): readonly MediaFile[] {
+  return filesByVideo.get(videoKey) ?? [];
 }
 
 /** Read everything the interceptor needs from a CDN URL, once */

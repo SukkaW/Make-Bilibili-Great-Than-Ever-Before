@@ -11,7 +11,6 @@
  * any module runs, and modules reach it through `hook.player`.
  */
 
-import { FIFO } from 'foxts/fifo';
 import { never } from 'foxts/guard';
 import { logger } from '../../logger';
 import type { ReadonlyURL } from '../../utils/readonly-url';
@@ -23,7 +22,7 @@ import * as hosts from './host-model';
 import { initPlayinfoCapture } from './playinfo';
 import { parseRangeHeader } from './range';
 import type { ByteRange } from './range';
-import { findFile, ingestPlayinfo, noteHost, toMediaAddress } from './registry';
+import { filesOf, findFile, ingestPlayinfo, noteHost, toMediaAddress } from './registry';
 import type { MediaAddress, MediaFile } from './registry';
 
 export interface MediaPolicyPhase {
@@ -55,8 +54,6 @@ export interface MediaServePhase {
   serve(this: void, request: MediaXhrRequest): XhrResponder | null
 }
 
-type PlayinfoListener = (playinfo: object, files: MediaFile[]) => void;
-
 /** no-p2p, once registered */
 let policy: MediaPolicyPhase | null = null;
 /** thread-ripper, once registered */
@@ -64,9 +61,6 @@ let server: MediaServePhase | null = null;
 /** The bootstrap's hooks: the route hooks are installed with them once a policy registers */
 let bootstrapHook: MakeBilibiliGreatThanEverBeforeHook | null = null;
 let routeHooksInstalled = false;
-/** The last few, replayed to a late listener */
-const recentPlayinfos = new FIFO<[playinfo: object, files: MediaFile[]]>();
-const playinfoListeners = new Set<PlayinfoListener>();
 
 /** What media modules get as `hook.player` */
 export const player = {
@@ -74,27 +68,16 @@ export const player = {
   hosts,
   /** Every acceptable URL of a file, for requests of its own (the warm-up) */
   candidates: acceptableCandidates,
-  registerPhase,
-  onPlayinfo
+  /** Every representation of a video, as its newest playinfo listed them */
+  filesOf,
+  registerPhase
 };
 
 /** Started once by the bootstrap, before any module runs */
 export function initPlayerInterceptor(hook: MakeBilibiliGreatThanEverBeforeHook) {
   bootstrapHook = hook;
 
-  initPlayinfoCapture(hook, (json, meta) => {
-    const files = ingestPlayinfo(json, meta);
-    if (!files) {
-      return;
-    }
-    recentPlayinfos.enqueue([json, files]);
-    if (recentPlayinfos.size > 3) {
-      recentPlayinfos.dequeue();
-    }
-    for (const cb of playinfoListeners) {
-      notify(cb, json, files);
-    }
-  });
+  initPlayinfoCapture(hook, ingestPlayinfo);
 
   hook.onXhrSend((ctx) => {
     if (server === null) {
@@ -120,26 +103,10 @@ function registerPhase(phase: MediaPolicyPhase | MediaServePhase) {
   logger.info(`[player-interceptor] ${phase.type} phase "${phase.name}" registered`);
 }
 
-/** Also replays the last few playinfos */
-function onPlayinfo(cb: PlayinfoListener) {
-  playinfoListeners.add(cb);
-  for (const [playinfo, files] of recentPlayinfos) {
-    notify(cb, playinfo, files);
-  }
-}
-
 /** Every acceptable URL of a file, for a request (`requested`) or for its own */
 function acceptableCandidates(file: MediaFile | null, requested: MediaAddress | null = null) {
   const candidates = mediaCandidates(requested, file);
   return policy === null ? candidates : policy.filter(candidates);
-}
-
-function notify(cb: PlayinfoListener, playinfo: object, files: MediaFile[]) {
-  try {
-    cb(playinfo, files);
-  } catch (e) {
-    logger.error('Failed to notify playinfo', e);
-  }
 }
 
 /**
