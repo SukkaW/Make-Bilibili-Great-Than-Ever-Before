@@ -224,7 +224,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   const lastDelivery = new Map<string, number>();
   /** Spreads a host's requests over the file's signatures */
   let rotation = 0;
-  /** Pieces waiting for a slot, in arrival order: the most urgent, then the oldest job's go first */
+  /** Pieces waiting for a slot, in arrival order */
   let queue: Array<[Job, Segment]> = [];
   const running = new Set<Attempt>();
   let pumping = false;
@@ -276,7 +276,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       race(job);
     } else if (job.segments[count - 1].attempts.size > 0) {
       // One piece is raced on a host never measured, if any: that measures it, at no risk to the
-      // request (`chooseRacer`)
+      // request (`choose`)
       const seg = job.segments[count - 1];
       if (eligible(job, seg, true, 0, null).some(option => !option.estimate.measured)) {
         duplicate(job, seg, true);
@@ -554,7 +554,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     }
   }
 
-  /** Start what waits, most urgent first, as slots and hosts allow */
+  /** Start what waits, in order, as slots and hosts allow */
   function pump() {
     if (pumping) {
       return;
@@ -563,12 +563,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     try {
       const blocked = new Set<Segment>();
       for (;;) {
-        let next = -1;
-        for (let i = 0, len = queue.length; i < len; i++) {
-          if (!blocked.has(queue[i][1]) && (next === -1 || before(queue[i][0], queue[next][0]))) {
-            next = i;
-          }
-        }
+        const next = queue.findIndex(unit => !blocked.has(unit[1]));
         if (next === -1 || !hasSlot(queue[next][0])) {
           break;
         }
@@ -826,7 +821,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   /**
    * Where a piece goes. A primary (`racer` null) only to a host that may carry it alone
    * (`ownersOf`), relaxed work anywhere, to explore; a racer, or a tail, anywhere it is not running
-   * already (`chooseRacer`). Hosts not tried since the piece last made progress first
+   * already (`choose`). Hosts not tried since the piece last made progress first
    */
   function pickHost(job: Job, seg: Segment, racer: 'explore' | 'fastest' | null): HostOption | null {
     const bytes = seg.end - seg.frontier + 1;
@@ -838,7 +833,8 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     if (options.length === 0) {
       return null;
     }
-    const chosen = racer === null ? choosePrimary(options, job, bytes) : chooseRacer(options, racer === 'explore');
+    const explore = racer === null ? job.cls === RELAXED : racer === 'explore';
+    const chosen = choose(options, explore, dup || bytes < SMALL_PIECE || job.segments.length === 1);
     if (seg.tried.has(chosen.hostname)) {
       // Every usable host was tried: a new round starts with this one
       seg.tried.clear();
@@ -1018,11 +1014,6 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   };
 }
 
-/** Which job's waiting piece goes first: the more urgent, then the older */
-function before(a: Job, b: Job) {
-  return a.cls < b.cls || (a.cls === b.cls && a.createdAt < b.createdAt);
-}
-
 /**
  * How many pieces a range is split into. A range whose transfer takes less than two round trips
  * is not worth splitting; otherwise each piece keeps its request busy for a good part of a second,
@@ -1113,16 +1104,19 @@ function withLoad(estimate: HostEstimate, load: [receiving: number, rate: number
 }
 
 /**
- * Among the hosts that may carry a piece: before anything is measured (and for relaxed work,
- * exploring) the least busy unmeasured one; a small piece, or a request in one piece, to the one
- * expected to finish first; otherwise the least busy
+ * Among the hosts that may carry a piece. A host never measured is unknown: its speed depends on
+ * whether its edge has the file and on the path to it, so it is never ranked against measured
+ * ones. Before anything is measured, or to `explore`, such a host first (the addresses Bilibili
+ * listed, then the least busy); else, for a `small` piece, the measured host expected to finish
+ * first, otherwise the least busy
  */
-function choosePrimary(options: HostOption[], job: Job, bytes: number): HostOption {
-  const unmeasured = options.filter(option => !option.estimate.measured);
-  if (unmeasured.length === options.length || (job.cls === RELAXED && unmeasured.length > 0)) {
-    return leastBusy(preferred(unmeasured));
+function choose(options: HostOption[], explore: boolean, small: boolean): HostOption {
+  const untested = options.filter(option => !option.estimate.measured);
+  if (untested.length > 0 && (explore || untested.length === options.length)) {
+    return leastBusy(preferred(untested));
   }
-  return bytes < SMALL_PIECE || job.segments.length === 1 ? fastest(options) : leastBusy(options);
+  const measured = options.filter(option => option.estimate.measured);
+  return small ? fastest(measured) : leastBusy(measured);
 }
 
 /**
@@ -1137,20 +1131,6 @@ function preferred(options: HostOption[]): HostOption[] {
   }
   const moved = options.filter(option => option.candidate.tier <= CandidateTier.Bcache);
   return moved.length > 0 ? moved : options;
-}
-
-/**
- * A host never measured is unknown: its speed depends on whether its edge has the file and on the
- * path to it, so it is never ranked against measured ones. To `explore`, such a host first (the
- * addresses Bilibili listed, then the least busy); else the fastest measured one first
- */
-function chooseRacer(options: HostOption[], explore: boolean): HostOption {
-  const untested = options.filter(option => !option.estimate.measured);
-  const measured = options.filter(option => option.estimate.measured);
-  if (untested.length > 0 && (explore || measured.length === 0)) {
-    return leastBusy(preferred(untested));
-  }
-  return fastest(measured);
 }
 
 function leastBusy(options: HostOption[]): HostOption {
