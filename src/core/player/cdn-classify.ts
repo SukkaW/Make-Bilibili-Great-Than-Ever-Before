@@ -35,8 +35,8 @@ export function isMirrorHost(hostname: string): boolean {
 }
 
 /**
- * Akamai matches `mirrorRegex`, but it does not accept upos signatures (403): an Akamai URL is
- * only valid with its own signature, it can never be the target of a host swap.
+ * Akamai matches `mirrorRegex`, but it does not accept upos signatures (403), and its own addresses
+ * carry an Akamai token on top: they are used as listed, and nothing is moved onto it.
  */
 export function isAkamaiHost(hostname: string): boolean {
   return hostname.endsWith('.akamaized.net');
@@ -95,24 +95,9 @@ export function classifyCdnUrl(url: ReadonlyURL): CdnUrlClass {
 }
 
 /**
- * Upos hosts accept any upos-signed address; Akamai only its own. Which host accepts which family
- * is learned, this only tells the families apart.
- */
-export type SignatureFamily = 'upos' | 'akam';
-
-/**
- * Akamai's addresses carry its token (`hdnts`) on top of an upos `upsig`: the token tells them
- * apart, `upsig` does not
- */
-export function signatureFamilyOf(url: ReadonlyURL): SignatureFamily {
-  const { searchParams } = url;
-  return searchParams.has('hdnts') || (!searchParams.has('upsig') && isAkamaiHost(url.hostname)) ? 'akam' : 'upos';
-}
-
-/**
  * When the signed address expires, in unix seconds; `0` if unknown. An Akamai address expires with
  * its token (`hdnts=exp=<unix>~…`) if that comes before `deadline`: a 403 after it is an expired
- * address, not Akamai refusing the signature family
+ * address
  */
 export function signatureDeadlineOf(url: ReadonlyURL): number {
   const deadline = unixSeconds(url.searchParams.get('deadline'));
