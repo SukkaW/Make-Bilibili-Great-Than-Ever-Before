@@ -15,7 +15,7 @@
  * - Offload: with slots free and nothing waiting, the piece expected to finish last has its tail
  *   cut off to the fastest measured host not on it, so that both finish together.
  * - Failure: retried on other hosts. Then, before any headers went to the page, the browser takes
- *   the request back; after, the player's own URL is the last resort.
+ *   the request back; after, the XHR fails, and the player's retry goes to the browser.
  * - Warm-up: the init segment and index of every representation the player may switch to from
  *   what it asks for (same kind, for video same codec), fetched ahead; a request for them is served
  *   from the copy once it is there.
@@ -56,11 +56,11 @@ const MAX_PIECES = 16;
 const MIN_PIECE = 192 * KiB;
 const MAX_PIECE = 4 * MiB;
 const MAX_SERVED_LENGTH = 64 * MiB;
-/** Failed attempts per piece before the job falls back or fails */
+/** Failed attempts per piece before the job fails */
 const MAX_TRIES = 6;
 /** No validated 206 from any host by then, when the player set no timeout: the browser takes over */
 const COMMIT_TIMEOUT_MS = 4800;
-/** Committed, but no byte arrived for this long: unfinished pieces go to the player's own URL */
+/** Committed, but no byte arrived for this long: the job fails */
 const JOB_STALL_MS = 8000;
 const TICK_MS = 50;
 /** Duplicates per piece at most */
@@ -116,9 +116,7 @@ interface Segment {
   /** Duplicates started for it */
   extra: number,
   /** Waiting for a slot */
-  queued: boolean,
-  /** Last resort: the player's own URL */
-  final: boolean
+  queued: boolean
 }
 
 /** One fetch() of (the rest of) a piece from one host. Times are performance.now() ms, `0` = not yet */
@@ -127,7 +125,7 @@ interface Attempt {
   readonly seg: Segment,
   readonly hostname: string,
   readonly candidate: MediaCandidate,
-  readonly role: 'primary' | 'dup' | 'final',
+  readonly role: 'primary' | 'dup',
   readonly controller: AbortController,
   /** Set when we abort it ourselves */
   abortReason: AbortReason | null,
@@ -169,8 +167,6 @@ interface Job {
   readonly timeout: number,
   /** Every acceptable URL of the file, by host */
   readonly candidates: ReadonlyMap<string, readonly MediaCandidate[]>,
-  /** The URL the player asked for (the warm-up's own pick): the last resort */
-  readonly requested: MediaCandidate,
   /** Page-realm memory: it is handed to the page as the XHR response */
   readonly buffer: ArrayBuffer,
   readonly bytes: Uint8Array,
@@ -189,7 +185,7 @@ interface Job {
   lastProgressAt: number
 }
 
-type JobParams = Pick<Job, 'file' | 'range' | 'served' | 'cls' | 'timeout' | 'requested'> & { candidates: readonly MediaCandidate[] };
+type JobParams = Pick<Job, 'file' | 'range' | 'served' | 'cls' | 'timeout'> & { candidates: readonly MediaCandidate[] };
 
 /** A host that could take a piece, with the URL it would get */
 interface HostOption {
@@ -345,11 +341,11 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       logger.warn(`[thread-ripper] ${FAILURES_TO_TURN_OFF} failures within a minute, leaving media requests to the browser for 30 seconds`);
     }
     if (!job.committed && job.sink.fallbackToNative()) {
-      logger.warn(`[thread-ripper] handed back to the browser: ${reason}`, { url: job.requested.href, range: job.range });
+      logger.warn(`[thread-ripper] handed back to the browser: ${reason}`, { kind: job.file.kind, range: job.range });
       return;
     }
     nativeRetry.set(`${job.file.key}:${job.served.start}-${job.served.end}`, now + NATIVE_RETRY_MS);
-    logger.error(`[thread-ripper] failed: ${reason}`, { url: job.requested.href, range: job.range });
+    logger.error(`[thread-ripper] failed: ${reason}`, { kind: job.file.kind, range: job.range });
     job.sink.error();
   }
 
@@ -507,7 +503,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     if (seg.attempts.size > 0) {
       // A racer is still on the piece. It covers a lost race, but not a failed primary: left to a
       // racer on a worse host, the piece would crawl. A fresh primary joins, settling keeps the one ahead
-      if (att.role === 'primary' && isRetryable(outcome) && !seg.final && ++seg.tries < MAX_TRIES) {
+      if (att.role === 'primary' && isRetryable(outcome) && ++seg.tries < MAX_TRIES) {
         enqueue(job, seg);
       }
       return;
@@ -516,20 +512,13 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       giveUp(job, outcome);
       return;
     }
-    if (seg.final) {
-      giveUp(job, `the player's own URL failed as well: ${outcome}`);
-      return;
-    }
     // Canceled by us (a race settled, a tail split off) is no failure of the piece
     if (outcome !== MediaOutcome.Canceled) {
       seg.tries++;
     }
     if (seg.tries >= MAX_TRIES) {
-      if (!job.committed) {
-        giveUp(job, `a piece failed ${seg.tries} times, last: ${outcome}`);
-        return;
-      }
-      seg.final = true;
+      giveUp(job, `a piece failed ${seg.tries} times, last: ${outcome}`);
+      return;
     }
     enqueue(job, seg);
   }
@@ -586,7 +575,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         const [job, seg] = queue[next];
         let target: HostOption | null = null;
         if (job.state === 'running' && seg.frontier <= seg.end) {
-          target = seg.final ? ownUrl(job) : pickHost(job, seg, null);
+          target = pickHost(job, seg, null);
           if (target === null) {
             blocked.add(seg);
             continue;
@@ -595,7 +584,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         queue.splice(next, 1);
         seg.queued = false;
         if (target !== null) {
-          launch(job, seg, seg.final ? 'final' : 'primary', target);
+          launch(job, seg, 'primary', target);
         }
       }
     } finally {
@@ -731,20 +720,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         return;
       }
     } else if (now - job.lastProgressAt > JOB_STALL_MS) {
-      // Unfinished pieces go to the player's own URL; if they went there already, the job fails
-      const stuck = job.segments.filter(seg => seg.frontier <= seg.end && !seg.final);
-      if (stuck.length === 0) {
-        giveUp(job, 'no progress');
-        return;
-      }
-      for (let i = 0, len = stuck.length; i < len; i++) {
-        stuck[i].final = true;
-        for (const att of stuck[i].attempts) {
-          abortAttempt(att, MediaOutcome.Stall);
-        }
-        enqueue(job, stuck[i]);
-      }
-      job.lastProgressAt = now;
+      giveUp(job, 'no progress');
       return;
     }
 
@@ -944,13 +920,6 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     return usable.length > 0 ? usable[rotation % usable.length] : null;
   }
 
-  /** The player's own URL, the last resort, within its host's slots */
-  function ownUrl(job: Job): HostOption | null {
-    const { hostname } = job.requested;
-    const active = busy.get(hostname) ?? 0;
-    return active < HOST_CAP ? { hostname, candidate: job.requested, estimate: model.estimate(hostname, job.file, 0), active } : null;
-  }
-
   // ---- Warm-up: the init segment and index of what the player may switch to, ahead of it
 
   /** Every representation of the file's video of its kind, and for video of its codec (`codecs` from the playinfo) */
@@ -966,14 +935,13 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         continue;
       }
       const candidates = player.candidates(other);
-      // Its own last resort, as the browser would pick it
-      const requested = defaultCandidate(candidates, other, now);
-      if (requested === null) {
+      // Nothing usable right now: a request for it fetches the normal way
+      if (defaultCandidate(candidates, other, now) === null) {
         continue;
       }
       const range: ByteRange = { start: 0, end: other.segmentBase.index.end };
       addHeader(other.key, range);
-      start({ file: other, range, served: range, cls: RELAXED, timeout: 0, candidates, requested }, null);
+      start({ file: other, range, served: range, cls: RELAXED, timeout: 0, candidates }, null);
     }
   }
 
@@ -1045,7 +1013,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       }
       // The player plays this video: what it may switch to is fetched ahead of it
       warmUp(file);
-      return sink => start({ file, range: fetched, served: range, cls: whole === null ? URGENT : CRITICAL, timeout: ctx.timeout, candidates, requested }, sink);
+      return sink => start({ file, range: fetched, served: range, cls: whole === null ? URGENT : CRITICAL, timeout: ctx.timeout, candidates }, sink);
     }
   };
 }
@@ -1069,7 +1037,7 @@ function pieceCount(length: number, rate: number, ttfb: number, hosts: number): 
 }
 
 function segment(start: number, end: number): Segment {
-  return { end, frontier: start, attempts: new Set(), tries: 0, tried: new Set(), extra: 0, queued: false, final: false };
+  return { end, frontier: start, attempts: new Set(), tries: 0, tried: new Set(), extra: 0, queued: false };
 }
 
 /**
