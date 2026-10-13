@@ -2,10 +2,10 @@
  * Every URL a media request could be fetched from, and which one the browser should fetch.
  *
  * A signed upgcxcode address is valid on any upgcxcode host (a Bilibili CDN host serving
- * `/upgcxcode/` paths, P2P / PCDN ones aside): the host is not part of the signature. So the
- * candidates of a request are the URL it asked for and every address the playinfo lists for its
- * file, as they are, plus each of those signatures on every upgcxcode host (the file's own, every
- * host seen in any playinfo, the seeds).
+ * `/upgcxcode/` paths; P2P / PCDN ones aside, and Akamai aside, which only takes its own signed
+ * addresses): the host is not part of the signature. So the candidates of a request are the URL it
+ * asked for and every address the playinfo lists for its file, as they are, plus each of those
+ * signatures on every upgcxcode host (the file's own, every host seen in any playinfo, the seeds).
  *
  * Policy phases (no-p2p) then decide which candidates are acceptable, dropping and converting
  * some. The browser fetches one of what is left natively, and a serve phase (thread-ripper) races
@@ -15,8 +15,7 @@
 import { addArrayElementsToSet } from 'foxts/add-array-elements-to-set';
 import { pickOne } from 'foxts/pick-random';
 import { isAkamaiHost, isMirrorHost, isP2PCDNDomain } from './cdn-classify';
-import type { SignatureFamily } from './cdn-classify';
-import { isAddressBanned, isCoolingDown, isExcluded, isFamilyRefused } from './host-model';
+import { isAddressBanned, isCoolingDown, isExcluded } from './host-model';
 import { upgcxcodeHosts } from './registry';
 import type { MediaAddress, MediaFile } from './registry';
 
@@ -38,12 +37,7 @@ export enum CandidateTier {
   /** Fetched through Bilibili's proxy */
   Proxy = 5,
   /** A P2P / PCDN host */
-  P2P = 6,
-  /**
-   * A signature on a host not known to accept it: upos ones on Akamai refuse with 403 (verified),
-   * Akamai ones elsewhere are unverified. Kept, tried last, and the refusal is learned
-   */
-  Foreign = 7
+  P2P = 6
 }
 
 /** One URL a media request could go to */
@@ -52,8 +46,6 @@ export interface MediaCandidate {
   readonly hostname: string,
   /** pathname + search: the signed address, whatever the host */
   readonly key: string,
-  /** Which hosts can verify the signature */
-  readonly family: SignatureFamily,
   /** When the signature expires, unix seconds, `0` if unknown */
   readonly deadline: number,
   readonly tier: CandidateTier,
@@ -68,8 +60,7 @@ const DEADLINE_MARGIN_MS = 60 * 1000;
 
 /**
  * upgcxcode hosts, tried even before any playinfo lists them. Which ones work, and how fast, is
- * learned: Akamai included, although it is known to refuse upos signatures. Never a P2P / PCDN
- * host (`isP2PCDNDomain`).
+ * learned. Never a P2P / PCDN host (`isP2PCDNDomain`), never Akamai (`isAkamaiHost`).
  */
 const SEED_HOSTS = [
   'upos-sz-mirrorali.bilivideo.com',
@@ -84,8 +75,7 @@ const SEED_HOSTS = [
   'upos-sz-mirroraliov.bilivideo.com',
   'upos-sz-estgoss.bilivideo.com',
   'cn-hk-eq-01-01.bilivideo.com',
-  'cn-hk-eq-01-03.bilivideo.com',
-  'upos-hz-mirrorakam.akamaized.net'
+  'cn-hk-eq-01-03.bilivideo.com'
 ];
 
 /**
@@ -114,8 +104,8 @@ export function mediaCandidates(requested: MediaAddress | null, file: MediaFile 
     const source = sources[i];
     add(asListed(source));
 
-    const { key, family, deadline } = source;
-    if (source.pathname.includes('/upgcxcode/') && !moved.has(key)) {
+    const { key, deadline } = source;
+    if (source.pathname.includes('/upgcxcode/') && !isAkamaiHost(source.hostname) && !moved.has(key)) {
       moved.add(key);
       for (let j = 0, count = upgcxcodeHosts.length; j < count; j++) {
         const hostname = upgcxcodeHosts[j];
@@ -123,9 +113,8 @@ export function mediaCandidates(requested: MediaAddress | null, file: MediaFile 
           href: `https://${hostname}${key}`,
           hostname,
           key,
-          family,
           deadline,
-          tier: tierOnHost(hostname, family),
+          tier: tierOnHost(hostname),
           p2p: false
         });
       }
@@ -134,11 +123,10 @@ export function mediaCandidates(requested: MediaAddress | null, file: MediaFile 
   return candidates;
 }
 
-/** Not banned, not about to expire, and this host neither refuses its signature nor lacks the file */
+/** Not banned, not about to expire, and this host does not lack the file */
 export function isCandidateUsable(candidate: MediaCandidate, file: MediaFile | null, now: number, nowSec: number) {
   return !isAddressBanned(candidate.key)
     && (candidate.deadline === 0 || (candidate.deadline - nowSec) * 1000 > DEADLINE_MARGIN_MS)
-    && !isFamilyRefused(candidate.hostname, candidate.family, now)
     && (file === null || !isExcluded(candidate.hostname, file, now));
 }
 
@@ -184,24 +172,21 @@ function upgcxcodeHostsOf(file: MediaFile | null) {
   }
   for (const hostname of upgcxcodeHosts) names.add(hostname);
   addArrayElementsToSet(names, SEED_HOSTS);
-  return Array.from(names).filter(hostname => !isP2PCDNDomain(hostname));
+  return Array.from(names).filter(hostname => !isP2PCDNDomain(hostname) && !isAkamaiHost(hostname));
 }
 
-/** A signature moved onto an upgcxcode host (never a P2P one) */
-function tierOnHost(hostname: string, family: SignatureFamily) {
-  if ((family === 'akam') !== isAkamaiHost(hostname)) {
-    return CandidateTier.Foreign;
-  }
+/** A signature moved onto an upgcxcode host (never a P2P one, never Akamai) */
+function tierOnHost(hostname: string) {
   // The path is an upgcxcode one wherever it is moved: only the host tells mirror from PoP
   return isMirrorHost(hostname) ? CandidateTier.Mirror : CandidateTier.Bcache;
 }
 
 /** An address as it was given: non-P2P ones over HTTPS, P2P ones untouched (their own ports) */
 function asListed(source: MediaAddress): MediaCandidate {
-  const { hostname, key, family, deadline } = source;
+  const { hostname, key, deadline } = source;
   const p2p = isP2PCDNDomain(hostname) || source.class === 'mcdn-upgcxcode' || source.class === 'mcdn-tf' || source.class === 'szbdyd';
   if (p2p) {
-    return { href: source.href, hostname, key, family, deadline, tier: CandidateTier.P2P, p2p };
+    return { href: source.href, hostname, key, deadline, tier: CandidateTier.P2P, p2p };
   }
   let tier: CandidateTier;
   if (PROXY_HOST_RE.test(hostname)) {
@@ -211,5 +196,5 @@ function asListed(source: MediaAddress): MediaCandidate {
   } else {
     tier = CandidateTier.ListedMirror;
   }
-  return { href: `https://${hostname}${key}`, hostname, key, family, deadline, tier, p2p };
+  return { href: `https://${hostname}${key}`, hostname, key, deadline, tier, p2p };
 }

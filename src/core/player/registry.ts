@@ -1,7 +1,7 @@
 import flru from 'flru';
 import { logger } from '../../logger';
-import { classifyCdnUrl, signatureDeadlineOf, signatureFamilyOf } from './cdn-classify';
-import type { CdnUrlClass, SignatureFamily } from './cdn-classify';
+import { classifyCdnUrl, signatureDeadlineOf } from './cdn-classify';
+import type { CdnUrlClass } from './cdn-classify';
 import { parseByteRangeSpec } from './range';
 import type { ByteRange } from './range';
 import { isObject } from '../../utils/is-object';
@@ -18,7 +18,6 @@ export interface MediaAddress {
   /** pathname + search: the signed address, whatever the host */
   readonly key: string,
   readonly class: CdnUrlClass,
-  readonly family: SignatureFamily,
   /** Unix seconds, `0` if unknown */
   readonly deadline: number
 }
@@ -40,7 +39,7 @@ export interface MediaFile {
   readonly addresses: readonly MediaAddress[]
 }
 
-/** Every upgcxcode host (upos mirror, Bilibili PoP, Akamai) seen in any playinfo or request */
+/** Every upgcxcode host (upos mirror, Bilibili PoP, and Akamai, which `candidates.ts` leaves out) seen in any playinfo or request */
 export const upgcxcodeHosts = new Set<string>();
 
 /**
@@ -124,7 +123,6 @@ export function toMediaAddress(url: ReadonlyURL): MediaAddress {
     pathname: url.pathname,
     key: url.pathname + url.search,
     class: classifyCdnUrl(url),
-    family: signatureFamilyOf(url),
     deadline: signatureDeadlineOf(url)
   };
 }

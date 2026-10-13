@@ -3,12 +3,11 @@
  *
  * - Speed: per host and video, its recent first-byte times, transfer rates and chunk gaps. An
  *   edge's speed depends on whether it has the video cached, so the next video starts unmeasured.
- * - Reliability: cooldowns, files a host lacks, signature families it refuses, dead addresses.
+ * - Reliability: cooldowns, files a host lacks, dead addresses.
  */
 
 import flru from 'flru';
 import { p50 } from 'fast-percentile';
-import type { SignatureFamily } from './cdn-classify';
 import type { MediaFile } from './registry';
 
 /** How a media request ended, from the point of view of its host, address and file */
@@ -81,12 +80,7 @@ interface HostRecord {
   /** No new requests to the host until then */
   cooldownUntil: number,
   /** Consecutive failures: grows the backoff, reset by a success */
-  failureStreak: number,
-  /** Key of the last signed address this host served: tried first on it */
-  provenAddress: string | null,
-  readonly acceptedFamilies: Set<SignatureFamily>,
-  /** Signature families this host refuses (Akamai with upos signatures), until */
-  readonly refusedFamilies: Map<SignatureFamily, number>
+  failureStreak: number
 }
 
 const KiB = 1024;
@@ -114,8 +108,6 @@ const speeds = flru<Map<string, Speed>>(32);
 const exclusions = flru<Map<string, number>>(256);
 /** Signed addresses (pathname + search) no host will serve */
 const bannedAddresses = flru<true>(512);
-/** Signed addresses some host has served */
-const acceptedAddresses = flru<true>(1024);
 /** Last time bytes arrived from any host */
 let lastBytesAt = -Infinity;
 
@@ -160,20 +152,8 @@ export function isExcluded(hostname: string, file: MediaFile, now: number) {
   return (exclusions.get(file.key)?.get(hostname) ?? 0) > now;
 }
 
-export function isFamilyRefused(hostname: string, family: SignatureFamily, now: number) {
-  return (get(hostname).refusedFamilies.get(family) ?? 0) > now;
-}
-
-export function acceptsFamily(hostname: string, family: SignatureFamily) {
-  return get(hostname).acceptedFamilies.has(family);
-}
-
 export function isAddressBanned(key: string) {
   return bannedAddresses.has(key);
-}
-
-export function provenAddress(hostname: string) {
-  return get(hostname).provenAddress;
 }
 
 /**
@@ -198,7 +178,7 @@ export function recordSpeed(hostname: string, file: MediaFile, sample: { ttfb: n
  * @param alive another request to the host is delivering right now: a connection-level failure
  * is then one bad connection, and the host stays available for the retry
  */
-export function recordOutcome(hostname: string, file: MediaFile, address: { key: string, family: SignatureFamily }, outcome: MediaOutcome, now: number, alive: boolean) {
+export function recordOutcome(hostname: string, file: MediaFile, addressKey: string, outcome: MediaOutcome, now: number, alive: boolean) {
   get(hostname).lastUsedAt = now;
   if (CONNECTION_FAILURES.has(outcome) && (alive || now - lastBytesAt > NETWORK_DOWN_MS)) {
     return;
@@ -208,10 +188,6 @@ export function recordOutcome(hostname: string, file: MediaFile, address: { key:
     case MediaOutcome.Ok:
       lastBytesAt = now;
       host.failureStreak = 0;
-      host.acceptedFamilies.add(address.family);
-      host.refusedFamilies.delete(address.family);
-      host.provenAddress = address.key;
-      acceptedAddresses.set(address.key, true);
       break;
     case MediaOutcome.Truncated:
     case MediaOutcome.Reset:
@@ -228,23 +204,12 @@ export function recordOutcome(hostname: string, file: MediaFile, address: { key:
       exclude(hostname, file, Infinity);
       break;
     case MediaOutcome.Expired:
-      bannedAddresses.set(address.key, true);
+      bannedAddresses.set(addressKey, true);
       break;
     case MediaOutcome.Refused:
-      if (!acceptedAddresses.has(address.key)) {
-        if (host.acceptedFamilies.has(address.family)) {
-          // The host works and no host has served this address: the address is the problem
-          bannedAddresses.set(address.key, true);
-        } else {
-          exclude(hostname, file, now + 60 * 1000);
-        }
-      } else if (host.acceptedFamilies.has(address.family)) {
-        // Both work elsewhere: something between this host and this file, not the address
-        exclude(hostname, file, now + 60 * 1000);
-      } else {
-        // The address works elsewhere: this host refuses the whole signature family (Akamai)
-        host.refusedFamilies.set(address.family, now + 30 * 60 * 1000);
-      }
+      // Every host only gets signatures it verifies (upos ones, Akamai its own): a refusal in
+      // time is between this host and this file
+      exclude(hostname, file, now + 60 * 1000);
       break;
     case MediaOutcome.Throttled:
       cooldown(host, now, 2000 * (2 ** Math.min(host.failureStreak, 3)));
@@ -264,7 +229,7 @@ export function recordOutcome(hostname: string, file: MediaFile, address: { key:
 function get(hostname: string): HostRecord {
   let host = hosts.get(hostname);
   if (host === undefined) {
-    host = { lastUsedAt: -Infinity, cooldownUntil: 0, failureStreak: 0, provenAddress: null, acceptedFamilies: new Set(), refusedFamilies: new Map() };
+    host = { lastUsedAt: -Infinity, cooldownUntil: 0, failureStreak: 0 };
     hosts.set(hostname, host);
   }
   return host;

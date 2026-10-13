@@ -539,7 +539,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     const { hostname, job } = att;
     const now = performance.now();
     // A slow first byte or a stall on a host that delivered just now is that request's, not the host's
-    model.recordOutcome(hostname, job.file, att.candidate, outcome, now, now - (lastDelivery.get(hostname) ?? -Infinity) < ALIVE_MS);
+    model.recordOutcome(hostname, job.file, att.candidate.key, outcome, now, now - (lastDelivery.get(hostname) ?? -Infinity) < ALIVE_MS);
 
     const received = att.bytes - att.firstChunkBytes;
     const delivered = outcome === MediaOutcome.Ok || outcome === MediaOutcome.Canceled;
@@ -888,7 +888,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       for (const att of seg.attempts) {
         onPiece ||= att.hostname === hostname;
       }
-      const candidate = avoidPiece && onPiece ? null : pickCandidate(hostname, listed, job.file, now, nowSec);
+      const candidate = avoidPiece && onPiece ? null : pickCandidate(listed, job.file, now, nowSec);
       if (candidate !== null) {
         options.push({ hostname, candidate, estimate: withLoad(model.estimate(hostname, job.file, bytes), loads.get(hostname), bytes), active });
       }
@@ -906,7 +906,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     const measured: Array<[hostname: string, eta: number]> = [];
     let best = Infinity;
     for (const [hostname, listed] of job.candidates) {
-      if (model.isCoolingDown(hostname, now) || pickCandidate(hostname, listed, job.file, now, nowSec) === null) {
+      if (model.isCoolingDown(hostname, now) || pickCandidate(listed, job.file, now, nowSec) === null) {
         continue;
       }
       const estimate = withLoad(model.estimate(hostname, job.file, bytes), loads.get(hostname), bytes);
@@ -938,21 +938,10 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     return loads;
   }
 
-  /** For one host: the signature it served last, else one of a family it accepts, else any, in turn */
-  function pickCandidate(hostname: string, listed: readonly MediaCandidate[], file: MediaFile, now: number, nowSec: number) {
-    const proven = model.provenAddress(hostname);
-    const usable: MediaCandidate[] = [];
-    for (let i = 0, len = listed.length; i < len; i++) {
-      if (isCandidateUsable(listed[i], file, now, nowSec)) {
-        if (listed[i].key === proven) {
-          return listed[i];
-        }
-        usable.push(listed[i]);
-      }
-    }
-    const accepted = usable.filter(candidate => model.acceptsFamily(hostname, candidate.family));
-    const list = accepted.length > 0 ? accepted : usable;
-    return list.length > 0 ? list[rotation % list.length] : null;
+  /** For one host: one of the file's signatures it may use, in turn */
+  function pickCandidate(listed: readonly MediaCandidate[], file: MediaFile, now: number, nowSec: number) {
+    const usable = listed.filter(candidate => isCandidateUsable(candidate, file, now, nowSec));
+    return usable.length > 0 ? usable[rotation % usable.length] : null;
   }
 
   /** The player's own URL, the last resort, within its host's slots */
