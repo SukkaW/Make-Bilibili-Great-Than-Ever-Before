@@ -14,8 +14,8 @@
  *   explore go to such hosts, and each request with several pieces races one of them on one
  * - Offload: with slots free and nothing waiting, the piece expected to finish last has its tail
  *   cut off to the fastest measured host not on it, so that both finish together.
- * - Failure: retried on other hosts. Then, before any headers went to the page, the browser takes
- *   the request back; after, the XHR fails, and the player's retry goes to the browser.
+ * - Failure: retried on other hosts; when none is left, the XHR fails, and the player's retry goes
+ *   to the browser.
  * - Warm-up: the init segment and index of every representation the player may switch to from
  *   what it asks for (same kind, for video same codec), fetched ahead; a request for them is served
  *   from the copy once it is there.
@@ -58,8 +58,6 @@ const MAX_PIECE = 4 * MiB;
 const MAX_SERVED_LENGTH = 64 * MiB;
 /** Failed attempts per piece before the job fails */
 const MAX_TRIES = 6;
-/** No validated 206 from any host by then, when the player set no timeout: the browser takes over */
-const COMMIT_TIMEOUT_MS = 4800;
 /** Committed, but no byte arrived for this long: the job fails */
 const JOB_STALL_MS = 8000;
 const TICK_MS = 50;
@@ -163,8 +161,6 @@ interface Job {
   readonly length: number,
   readonly cls: typeof CRITICAL | typeof URGENT | typeof RELAXED,
   readonly createdAt: number,
-  /** The player's own XHR timeout, `0` for none */
-  readonly timeout: number,
   /** Every acceptable URL of the file, by host */
   readonly candidates: ReadonlyMap<string, readonly MediaCandidate[]>,
   /** Page-realm memory: it is handed to the page as the XHR response */
@@ -176,7 +172,7 @@ interface Job {
   /** From the first valid response: the warm-up's copy is served with it */
   contentType: string,
   state: 'running' | 'done' | 'failed',
-  /** Headers went to the page: the browser can no longer take the request back */
+  /** Headers went to the page */
   committed: boolean,
   /** The whole file's size, from the first valid Content-Range */
   total: number | null,
@@ -185,7 +181,7 @@ interface Job {
   lastProgressAt: number
 }
 
-type JobParams = Pick<Job, 'file' | 'range' | 'served' | 'cls' | 'timeout'> & { candidates: readonly MediaCandidate[] };
+type JobParams = Pick<Job, 'file' | 'range' | 'served' | 'cls'> & { candidates: readonly MediaCandidate[] };
 
 /** A host that could take a piece, with the URL it would get */
 interface HostOption {
@@ -325,7 +321,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     }
   }
 
-  /** Before commit the browser sends the request itself; after it, the XHR fails */
+  /** The XHR fails, and the player's retry of the range goes to the browser */
   function giveUp(job: Job, reason: string) {
     const now = performance.now();
     stop(job, false);
@@ -339,10 +335,6 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       offUntil = now + 30 * 1000;
       recentFailures = [];
       logger.warn(`[thread-ripper] ${FAILURES_TO_TURN_OFF} failures within a minute, leaving media requests to the browser for 30 seconds`);
-    }
-    if (!job.committed && job.sink.fallbackToNative()) {
-      logger.warn(`[thread-ripper] handed back to the browser: ${reason}`, { kind: job.file.kind, range: job.range });
-      return;
     }
     nativeRetry.set(`${job.file.key}:${job.served.start}-${job.served.end}`, now + NATIVE_RETRY_MS);
     logger.error(`[thread-ripper] failed: ${reason}`, { kind: job.file.kind, range: job.range });
@@ -707,14 +699,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   }
 
   function tickJob(job: Job, now: number) {
-    if (!job.committed) {
-      // Never hand back while a host is left to try, except to leave the browser the other half
-      // of the player's own timeout
-      if (now - job.createdAt > (job.timeout > 0 ? job.timeout / 2 : COMMIT_TIMEOUT_MS)) {
-        giveUp(job, 'no CDN host answered in time');
-        return;
-      }
-    } else if (now - job.lastProgressAt > JOB_STALL_MS) {
+    if (job.committed && now - job.lastProgressAt > JOB_STALL_MS) {
       giveUp(job, 'no progress');
       return;
     }
@@ -937,7 +922,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       }
       const range: ByteRange = { start: 0, end: other.segmentBase.index.end };
       addHeader(other.key, range);
-      start({ file: other, range, served: range, cls: RELAXED, timeout: 0, candidates }, null);
+      start({ file: other, range, served: range, cls: RELAXED, candidates }, null);
     }
   }
 
@@ -1009,7 +994,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       }
       // The player plays this video: what it may switch to is fetched ahead of it
       warmUp(file);
-      return sink => start({ file, range: fetched, served: range, cls: whole === null ? URGENT : CRITICAL, timeout: ctx.timeout, candidates }, sink);
+      return sink => start({ file, range: fetched, served: range, cls: whole === null ? URGENT : CRITICAL, candidates }, sink);
     }
   };
 }

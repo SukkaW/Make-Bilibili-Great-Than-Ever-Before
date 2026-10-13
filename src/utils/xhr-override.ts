@@ -21,16 +21,11 @@ const enum ReadyState {
 
 /* eslint-disable @typescript-eslint/unbound-method -- only called with Reflect.apply */
 const NativeXMLHttpRequest = unsafeWindow.XMLHttpRequest;
-const nativeSend = NativeXMLHttpRequest.prototype.send;
 /**
- * Captured before any page script runs: the page may wrap these later (monitoring SDKs do), and our
- * own events and listeners should neither go through its wrappers nor show up in them
+ * Captured before any page script runs: the page may wrap it later (monitoring SDKs do), and our
+ * own events should not go through its wrappers
  */
-const {
-  dispatchEvent: nativeDispatchEvent,
-  addEventListener: nativeAddEventListener,
-  removeEventListener: nativeRemoveEventListener
-} = unsafeWindow.EventTarget.prototype;
+const { dispatchEvent: nativeDispatchEvent } = unsafeWindow.EventTarget.prototype;
 /* eslint-enable @typescript-eslint/unbound-method */
 
 interface XhrState {
@@ -68,12 +63,11 @@ export class SyntheticXhrSink {
   /** Lower-cased names: each one once, as `Headers` iteration gives them */
   headers = new Map<string, string>();
   body: ArrayBuffer | null = null;
-  /** No more events: finished, failed, aborted, handed back or re-opened */
+  /** No more events: finished, failed, aborted or re-opened */
   ended = false;
-  /** Headers received: from here on the request can no longer fall back to native */
+  /** Headers received */
   private committed = false;
   private lastProgressAt = -Infinity;
-  private readonly sentAt = performance.now();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly controller = new AbortController();
   /** Aborted when the page calls `abort()`, re-opens the XHR, or its `timeout` elapses */
@@ -81,8 +75,7 @@ export class SyntheticXhrSink {
 
   constructor(
     private readonly xhr: XMLHttpRequest,
-    private readonly state: XhrState,
-    private readonly requestBody: XhrSendContext['body']
+    private readonly state: XhrState
   ) {}
 
   /** The spec's send() flag: set while the request is in flight */
@@ -107,7 +100,7 @@ export class SyntheticXhrSink {
           responder(this);
         } catch (e) {
           logger.error('XMLHttpRequest responder failed', e, { url: this.state.url });
-          if (!this.fallbackToNative()) this.error();
+          this.error();
         }
       })
       .finally(noop);
@@ -157,27 +150,6 @@ export class SyntheticXhrSink {
 
   error() {
     if (this.inFlight) this.fail('error', 'XMLHttpRequest failed', 'NetworkError');
-  }
-
-  fallbackToNative() {
-    if (!this.inFlight || this.committed) return false;
-    this.clearTimer();
-    this.ended = true;
-    this.state.fake = null;
-    this.state.nativeSent = true;
-    const { xhr } = this;
-    // Keep the page's timeout budget: native send() restarts the clock
-    if (xhr.timeout > 0) {
-      xhr.timeout = Math.max(1, Math.round(xhr.timeout - (performance.now() - this.sentAt)));
-    }
-    // Native send() fires `loadstart` again, but the page has already seen it
-    Reflect.apply(nativeAddEventListener, xhr, ['loadstart', stopImmediatePropagation, { capture: true, once: true }]);
-    try {
-      Reflect.apply(nativeSend, xhr, [this.requestBody]);
-    } finally {
-      Reflect.apply(nativeRemoveEventListener, xhr, ['loadstart', stopImmediatePropagation, { capture: true }]);
-    }
-    return true;
   }
 
   /** The page aborted it */
@@ -366,7 +338,7 @@ export const PatchedXMLHttpRequest = class extends NativeXMLHttpRequest {
       return super.send(body);
     }
 
-    state.fake = new SyntheticXhrSink(this, state, body);
+    state.fake = new SyntheticXhrSink(this, state);
     state.fake.start(responder);
   }
 
@@ -485,10 +457,6 @@ for (let i = 0, len = patchedKeys.length; i < len; i++) {
   }
 }
 disguiseAsNative(PatchedXMLHttpRequest, NativeXMLHttpRequest);
-
-function stopImmediatePropagation(e: Event) {
-  e.stopImmediatePropagation();
-}
 
 function invalidState(message: string) {
   return new unsafeWindow.DOMException(message, 'InvalidStateError');
