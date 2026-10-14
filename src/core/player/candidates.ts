@@ -15,7 +15,7 @@
 import { addArrayElementsToSet } from 'foxts/add-array-elements-to-set';
 import { pickOne } from 'foxts/pick-random';
 import { isAkamaiHost, isMirrorHost, isP2PCDNDomain } from './cdn-classify';
-import { isAddressBanned, isCoolingDown, isExcluded } from './host-model';
+import { isCoolingDown, isExcluded } from './host-model';
 import { upgcxcodeHosts } from './registry';
 import type { MediaAddress, MediaFile } from './registry';
 
@@ -123,10 +123,9 @@ export function mediaCandidates(requested: MediaAddress | null, file: MediaFile 
   return candidates;
 }
 
-/** Not banned, not about to expire, and this host does not lack the file */
+/** Not about to expire, and this host does not lack the file */
 export function isCandidateUsable(candidate: MediaCandidate, file: MediaFile | null, now: number, nowSec: number) {
-  return !isAddressBanned(candidate.key)
-    && (candidate.deadline === 0 || (candidate.deadline - nowSec) * 1000 > DEADLINE_MARGIN_MS)
+  return (candidate.deadline === 0 || (candidate.deadline - nowSec) * 1000 > DEADLINE_MARGIN_MS)
     && (file === null || !isExcluded(candidate.hostname, file, now));
 }
 

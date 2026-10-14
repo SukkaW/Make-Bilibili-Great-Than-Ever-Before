@@ -374,7 +374,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     const verdict = classifyResponse(
       response,
       parseContentRange(response.headers.get('content-range')),
-      { start, end, total: job.total, addressExpired: att.candidate.deadline !== 0 && att.candidate.deadline * 1000 <= Date.now() }
+      { start, end, total: job.total }
     );
     if (verdict.outcome !== MediaOutcome.Ok || !response.body) {
       response.body?.cancel().catch(noop);
@@ -520,7 +520,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     const { hostname, job } = att;
     const now = performance.now();
     // A slow first byte or a stall on a host that delivered just now is that request's, not the host's
-    model.recordOutcome(hostname, job.file, att.candidate.key, outcome, now, now - (lastDelivery.get(hostname) ?? -Infinity) < ALIVE_MS);
+    model.recordOutcome(hostname, job.file, outcome, now, now - (lastDelivery.get(hostname) ?? -Infinity) < ALIVE_MS);
 
     const received = att.bytes - att.firstChunkBytes;
     const delivered = outcome === MediaOutcome.Ok || outcome === MediaOutcome.Canceled;

@@ -40,13 +40,10 @@ export type OnBeforeFetchHook = (fetchArgs: FetchArgs) => FetchArgs | null | Res
 export type OnXhrOpenHook = (xhrOpenArgs: XHROpenArgs, xhr: XMLHttpRequest) => XHROpenArgs | null;
 
 export interface XhrSendContext {
-  readonly xhr: XMLHttpRequest,
   /** Upper-cased request method */
   readonly method: string,
   /** Absolute request URL after all `onXhrOpen` hooks */
   readonly url: string,
-  /** The URL originally passed to `open()` */
-  readonly originalUrl: string | URL,
   readonly async: boolean,
   /** `open()` received a username or password */
   readonly hasUrlCredentials: boolean,
@@ -54,8 +51,7 @@ export interface XhrSendContext {
   readonly headers: ReadonlyArray<readonly [name: string, value: string]>,
   readonly body: Document | XMLHttpRequestBodyInit | null | undefined,
   readonly responseType: XMLHttpRequestResponseType,
-  readonly withCredentials: boolean,
-  readonly timeout: number
+  readonly withCredentials: boolean
 }
 
 export type XhrResponder = (response: SyntheticXhrSink) => void;
@@ -70,7 +66,6 @@ export interface MakeBilibiliGreatThanEverBeforeHook {
   onBeforeFetch(this: void, cb: OnBeforeFetchHook): void,
   onResponse(this: void, cb: (response: Response, fetchArgs: FetchArgs, $fetch: typeof fetch) => Promise<Response> | Response): void,
   onXhrOpen(this: void, cb: OnXhrOpenHook): void,
-  onAfterXhrOpen(this: void, cb: (xhr: XMLHttpRequest) => void): void,
   onXhrResponse(this: void, cb: (method: string, url: string | URL, response: unknown, xhr: XMLHttpRequest) => unknown): void,
   onXhrSend(this: void, cb: OnXhrSendHook): void,
   onlyCallOnce(this: void, fn: () => void): void,

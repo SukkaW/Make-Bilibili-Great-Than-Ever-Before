@@ -12,13 +12,13 @@ export interface ResponseVerdict {
 }
 
 export function classifyResponse(
-  response: Pick<Response, 'type' | 'status' | 'redirected' | 'url'>,
+  response: Pick<Response, 'status' | 'redirected' | 'url'>,
   contentRange: ContentRange | null,
-  expected: { start: number, end: number, total: number | null, addressExpired: boolean }
+  expected: { start: number, end: number, total: number | null }
 ): ResponseVerdict {
   const invalid = (outcome: MediaOutcome): ResponseVerdict => ({ outcome, total: null });
 
-  if (response.type === 'opaqueredirect' || (response.redirected && isP2PCDNDomain(hostnameOf(response.url)))) {
+  if (response.redirected && isP2PCDNDomain(hostnameOf(response.url))) {
     return invalid(MediaOutcome.Redirect);
   }
 
@@ -45,7 +45,7 @@ export function classifyResponse(
   }
 
   if (status === 200) return invalid(MediaOutcome.NoRange);
-  if (status === 401 || status === 403) return invalid(expected.addressExpired ? MediaOutcome.Expired : MediaOutcome.Refused);
+  if (status === 401 || status === 403) return invalid(MediaOutcome.Refused);
   if (status === 404 || status === 410) return invalid(MediaOutcome.Missing);
   if (status === 416) return invalid(MediaOutcome.EofClamp);
   if (status === 412 || status === 429 || status === 503) return invalid(MediaOutcome.Throttled);

@@ -6,7 +6,6 @@ import { disguiseAsNative } from './fake-native-function';
 /** Filled by the bootstrap's `hook.onXhr*` */
 export const xhrHooks = {
   open: new Set<OnXhrOpenHook>(),
-  afterOpen: new Set<(xhr: XMLHttpRequest) => void>(),
   response: new Set<(method: string, url: string | URL, response: unknown, xhr: XMLHttpRequest) => unknown>(),
   send: new Set<OnXhrSendHook>()
 };
@@ -263,14 +262,6 @@ export const PatchedXMLHttpRequest = class extends NativeXMLHttpRequest {
     if (previous && previous.readyState !== ReadyState.OPENED) {
       Reflect.apply(nativeDispatchEvent, this, [new unsafeWindow.Event('readystatechange')]);
     }
-
-    for (const onAfterXhrOpen of xhrHooks.afterOpen) {
-      try {
-        onAfterXhrOpen(this);
-      } catch (e) {
-        logger.error('Failed to call onAfterXhrOpen', e);
-      }
-    }
   }
 
   setRequestHeader(name: string, value: string) {
@@ -296,23 +287,20 @@ export const PatchedXMLHttpRequest = class extends NativeXMLHttpRequest {
     if (state.fake) {
       throw invalidState('Failed to execute \'send\' on \'XMLHttpRequest\': The object\'s state must be OPENED.');
     }
-    if (state.nativeSent || xhrHooks.send.size === 0) {
+    if (state.nativeSent) {
       state.nativeSent = true;
       return super.send(body);
     }
 
     const ctx: XhrSendContext = {
-      xhr: this,
       method: state.method.toUpperCase(),
       url: state.url,
-      originalUrl: state.originalUrl,
       async: state.async,
       hasUrlCredentials: state.hasUrlCredentials,
       headers: state.headers,
       body,
       responseType: this.responseType,
-      withCredentials: this.withCredentials,
-      timeout: this.timeout
+      withCredentials: this.withCredentials
     };
 
     let responder: XhrResponder | null = null;

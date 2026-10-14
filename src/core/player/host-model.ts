@@ -3,7 +3,7 @@
  *
  * - Speed: per host and video, its recent first-byte times, transfer rates and chunk gaps. An
  *   edge's speed depends on whether it has the video cached, so the next video starts unmeasured.
- * - Reliability: cooldowns, files a host lacks, dead addresses.
+ * - Reliability: cooldowns, files a host lacks.
  */
 
 import flru from 'flru';
@@ -31,8 +31,6 @@ export enum MediaOutcome {
   NoRange = 'no-range',
   /** Redirected off to a P2P CDN */
   Redirect = 'redirect',
-  /** 401 / 403 with a signature past its deadline */
-  Expired = 'expired',
   /** 401 / 403 */
   Refused = 'refused',
   /** 404 / 410 */
@@ -106,8 +104,6 @@ const hosts = new Map<string, HostRecord>();
 const speeds = flru<Map<string, Speed>>(32);
 /** file key -> hostname -> excluded until */
 const exclusions = flru<Map<string, number>>(256);
-/** Signed addresses (pathname + search) no host will serve */
-const bannedAddresses = flru<true>(512);
 /** Last time bytes arrived from any host */
 let lastBytesAt = -Infinity;
 
@@ -152,10 +148,6 @@ export function isExcluded(hostname: string, file: MediaFile, now: number) {
   return (exclusions.get(file.key)?.get(hostname) ?? 0) > now;
 }
 
-export function isAddressBanned(key: string) {
-  return bannedAddresses.has(key);
-}
-
 /**
  * @param sample `ttfb` in ms, or how long it waited without one when that says the host is slow;
  * `rate` in bytes per ms after the first chunk, `partial` when the transfer was cut short (only
@@ -178,7 +170,7 @@ export function recordSpeed(hostname: string, file: MediaFile, sample: { ttfb: n
  * @param alive another request to the host is delivering right now: a connection-level failure
  * is then one bad connection, and the host stays available for the retry
  */
-export function recordOutcome(hostname: string, file: MediaFile, addressKey: string, outcome: MediaOutcome, now: number, alive: boolean) {
+export function recordOutcome(hostname: string, file: MediaFile, outcome: MediaOutcome, now: number, alive: boolean) {
   get(hostname).lastUsedAt = now;
   if (CONNECTION_FAILURES.has(outcome) && (alive || now - lastBytesAt > NETWORK_DOWN_MS)) {
     return;
@@ -202,9 +194,6 @@ export function recordOutcome(hostname: string, file: MediaFile, addressKey: str
     case MediaOutcome.Missing:
     case MediaOutcome.Integrity:
       exclude(hostname, file, Infinity);
-      break;
-    case MediaOutcome.Expired:
-      bannedAddresses.set(addressKey, true);
       break;
     case MediaOutcome.Refused:
       // Every host only gets signatures it verifies (upos ones, Akamai its own): a refusal in
