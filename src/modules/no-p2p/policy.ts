@@ -12,7 +12,7 @@
 
 import { CandidateTier } from '../../core/player/candidates';
 import type { MediaCandidate } from '../../core/player/candidates';
-import { classifyCdnUrl } from '../../core/player/cdn-classify';
+import { toMediaAddress } from '../../core/player/registry';
 
 const PROXY_TF = 'proxy-tf-all-ws.bilivideo.com';
 
@@ -31,7 +31,7 @@ export function noP2PPolicy(candidates: readonly MediaCandidate[]): MediaCandida
     }
 
     const url = new URL(candidate.href);
-    switch (classifyCdnUrl(url)) {
+    switch (candidate.class) {
       // szbdyd.com appears to be deprecated, but we still handle it just in case
       case 'szbdyd': {
         const source = url.searchParams.get('xy_usource');
@@ -39,7 +39,7 @@ export function noP2PPolicy(candidates: readonly MediaCandidate[]): MediaCandida
           url.protocol = 'https:';
           url.hostname = source;
           url.port = '';
-          acceptable.push({ ...candidate, href: url.href, hostname: url.hostname, key: url.pathname + url.search, tier: CandidateTier.Source, p2p: false });
+          acceptable.push({ ...toMediaAddress(url), tier: CandidateTier.Source, p2p: false });
         }
         break;
       }
@@ -47,7 +47,7 @@ export function noP2PPolicy(candidates: readonly MediaCandidate[]): MediaCandida
       case 'mcdn-tf': {
         const proxy = new URL(`https://${PROXY_TF}`);
         proxy.searchParams.set('url', candidate.href);
-        acceptable.push({ ...candidate, href: proxy.href, hostname: PROXY_TF, key: proxy.pathname + proxy.search, tier: CandidateTier.Proxy, p2p: false });
+        acceptable.push({ ...toMediaAddress(proxy), deadline: candidate.deadline, tier: CandidateTier.Proxy, p2p: false });
         break;
       }
       // mcdn upgcxcode (os=mcdn, *.mcdn.bilivideo.*): its signature is on every upgcxcode host already

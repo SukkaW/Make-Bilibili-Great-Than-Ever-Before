@@ -27,7 +27,7 @@ import { p } from 'fast-percentile';
 import { ibytes, prettyBandwidth } from 'xbits';
 import { logger } from '../../logger';
 import type { MediaServePhase } from '../../core/player';
-import { CandidateTier, defaultCandidate, isCandidateUsable } from '../../core/player/candidates';
+import { CandidateTier } from '../../core/player/candidates';
 import type { MediaCandidate } from '../../core/player/candidates';
 import { MediaOutcome } from '../../core/player/host-model';
 import type { HostEstimate } from '../../core/player/host-model';
@@ -260,7 +260,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
 
     // No more pieces than the hosts that may carry one alone can take
     const typical = model.typicalSpeed(file);
-    const owners = ownersOf(job, Math.min(length, MiB), now);
+    const owners = ownersOf(hostsOf(job, Math.min(length, MiB), now));
     const count = pieceCount(length, typical.rate, typical.ttfb, owners?.size ?? 1);
     for (let i = 0; i < count; i++) {
       job.segments.push(segment(range.start + Math.floor(length * i / count), range.start + Math.floor(length * (i + 1) / count) - 1));
@@ -274,7 +274,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       // One piece is raced on a host never measured, if any: that measures it, at no risk to the
       // request (`choose`)
       const seg = job.segments[count - 1];
-      if (eligible(job, seg, true, 0, null).some(option => !option.estimate.measured)) {
+      if (eligible(hostsOf(job, 0, now), seg, null).some(option => !option.estimate.measured)) {
         duplicate(job, seg, true);
       }
     }
@@ -371,17 +371,14 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       return classifyError(e, att.abortReason, att.bytes, false, performance.now() - att.startedAt);
     }
 
-    const verdict = classifyResponse(
-      response,
-      parseContentRange(response.headers.get('content-range')),
-      { start, end, total: job.total }
-    );
-    if (verdict.outcome !== MediaOutcome.Ok || !response.body) {
+    const contentRange = parseContentRange(response.headers.get('content-range'));
+    const outcome = classifyResponse(response, contentRange, { start, end, total: job.total });
+    if (contentRange === null || outcome !== MediaOutcome.Ok || !response.body) {
       response.body?.cancel().catch(noop);
-      return verdict.outcome === MediaOutcome.Ok ? MediaOutcome.Truncated : verdict.outcome;
+      return outcome === MediaOutcome.Ok ? MediaOutcome.Truncated : outcome;
     }
     att.headersAt = performance.now();
-    commit(job, response, verdict.total);
+    commit(job, response, contentRange.total);
 
     const reader = response.body.getReader();
     try {
@@ -453,27 +450,54 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     job.sink.headersReceived(206, responseHeaders, response.statusText);
   }
 
-  function onChunk(att: Attempt, chunk: Uint8Array) {
-    const { job, seg } = att;
-    model.noteBytes(performance.now());
-    const result = writeChunk(job, att, chunk);
-    if (result !== 'mismatch' && job.state === 'running') {
-      if (seg.frontier > seg.end) {
-        // The race is over for this piece
-        for (const other of seg.attempts) {
-          if (other !== att) {
-            abortAttempt(other, MediaOutcome.Canceled);
-          }
-        }
-      }
-      if (job.segments.every(piece => piece.frontier > piece.end)) {
-        complete(job);
-      } else if (job.sink) {
-        const served = byteRangeLength(job.served);
-        job.sink.progress(Math.min(job.covered, served), served);
+  /**
+   * Take a chunk an attempt received. Every attempt starts at or below its piece's frontier and the
+   * frontier only moves forward, so a piece always holds a contiguous run: bytes below the frontier
+   * were written by another attempt and are compared instead, bytes above it are written.
+   *
+   * - `overrun`: the attempt is past its piece's end (the piece is done or shrunk), stop it
+   * - `mismatch`: two responses disagree about the file's content
+   */
+  function onChunk(att: Attempt, chunk: Uint8Array): 'ok' | 'overrun' | 'mismatch' {
+    const { job, seg, pos } = att;
+    const now = performance.now();
+    model.noteBytes(now);
+    const usable = job.state === 'running' ? Math.min(chunk.byteLength, seg.end + 1 - pos) : 0;
+    if (usable <= 0) {
+      return 'overrun';
+    }
+    const base = job.range.start;
+    const duplicateEnd = Math.min(pos + usable, seg.frontier);
+    for (let offset = pos; offset < duplicateEnd; offset++) {
+      if (job.bytes[offset - base] !== chunk[offset - pos]) {
+        return 'mismatch';
       }
     }
-    return result;
+    if (pos + usable > seg.frontier) {
+      const fresh = chunk.subarray(seg.frontier - pos, usable);
+      job.bytes.set(fresh, seg.frontier - base);
+      job.covered += fresh.byteLength;
+      seg.frontier = pos + usable;
+      seg.tried.clear();
+      job.lastProgressAt = now;
+    }
+    att.pos = pos + usable;
+
+    if (seg.frontier > seg.end) {
+      // The race is over for this piece
+      for (const other of seg.attempts) {
+        if (other !== att) {
+          abortAttempt(other, MediaOutcome.Canceled);
+        }
+      }
+    }
+    if (job.segments.every(piece => piece.frontier > piece.end)) {
+      complete(job);
+    } else if (job.sink) {
+      const served = byteRangeLength(job.served);
+      job.sink.progress(Math.min(job.covered, served), served);
+    }
+    return usable < chunk.byteLength ? 'overrun' : 'ok';
   }
 
   function onAttemptEnd(att: Attempt, outcome: MediaOutcome) {
@@ -816,8 +840,9 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   function pickHost(job: Job, seg: Segment, racer: 'explore' | 'fastest' | null): HostOption | null {
     const bytes = seg.end - seg.frontier + 1;
     const dup = racer !== null;
-    const owners = dup || job.cls === RELAXED ? null : ownersOf(job, bytes, performance.now());
-    const all = eligible(job, seg, dup, bytes, owners);
+    const hosts = hostsOf(job, bytes, performance.now());
+    const owners = dup || job.cls === RELAXED ? null : ownersOf(hosts);
+    const all = eligible(hosts, dup ? seg : null, owners);
     const untried = all.filter(option => !seg.tried.has(option.hostname));
     const options = untried.length === 0 ? all : untried;
     if (options.length === 0) {
@@ -833,57 +858,21 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   }
 
   function hasAlternative(job: Job, seg: Segment, now: number) {
-    return eligible(job, seg, true, seg.end - seg.frontier + 1, null, now).length > 0;
+    return eligible(hostsOf(job, seg.end - seg.frontier + 1, now), seg, null).length > 0;
   }
 
-  /** Hosts with room that could take the piece now, of `only` if given, not those on it when `avoidPiece` */
-  function eligible(job: Job, seg: Segment, avoidPiece: boolean, bytes: number, only: ReadonlySet<string> | null, now = performance.now()) {
+  /** Every host of the job not cooling down, with a signature it may use, busy or not, and what a piece of `bytes` would get from it */
+  function hostsOf(job: Job, bytes: number, now: number): HostOption[] {
     const nowSec = Date.now() / 1000;
     const loads = hostLoads(now);
-    const options: HostOption[] = [];
+    const hosts: HostOption[] = [];
     for (const [hostname, listed] of job.candidates) {
-      const active = busy.get(hostname) ?? 0;
-      if (active >= HOST_CAP || (only !== null && !only.has(hostname)) || model.isCoolingDown(hostname, now)) {
-        continue;
-      }
-      let onPiece = false;
-      for (const att of seg.attempts) {
-        onPiece ||= att.hostname === hostname;
-      }
-      const candidate = avoidPiece && onPiece ? null : pickCandidate(listed, job.file, now, nowSec);
+      const candidate = model.isCoolingDown(hostname, now) ? null : pickCandidate(listed, job.file, now, nowSec);
       if (candidate !== null) {
-        options.push({ hostname, candidate, estimate: withLoad(model.estimate(hostname, job.file, bytes), loads.get(hostname), bytes), active });
+        hosts.push({ hostname, candidate, estimate: withLoad(model.estimate(hostname, job.file, bytes), loads.get(hostname), bytes), active: busy.get(hostname) ?? 0 });
       }
     }
-    return options;
-  }
-
-  /**
-   * The hosts a piece of `bytes` may go to on its own, busy or not: the measured ones expected to
-   * finish it within `ETA_BAND` of the best. `null` when none is measured: any host may take it
-   */
-  function ownersOf(job: Job, bytes: number, now: number): Set<string> | null {
-    const nowSec = Date.now() / 1000;
-    const loads = hostLoads(now);
-    const measured: Array<[hostname: string, eta: number]> = [];
-    let best = Infinity;
-    for (const [hostname, listed] of job.candidates) {
-      if (model.isCoolingDown(hostname, now) || pickCandidate(listed, job.file, now, nowSec) === null) {
-        continue;
-      }
-      const estimate = withLoad(model.estimate(hostname, job.file, bytes), loads.get(hostname), bytes);
-      if (estimate.measured) {
-        measured.push([hostname, estimate.eta]);
-        best = Math.min(best, estimate.eta);
-      }
-    }
-    const owners = new Set<string>();
-    for (let i = 0, len = measured.length; i < len; i++) {
-      if (measured[i][1] <= best * ETA_BAND) {
-        owners.add(measured[i][0]);
-      }
-    }
-    return owners.size > 0 ? owners : null;
+    return hosts;
   }
 
   /** hostname -> [its requests receiving, the bytes per ms they get together] */
@@ -902,7 +891,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
 
   /** For one host: one of the file's signatures it may use, in turn */
   function pickCandidate(listed: readonly MediaCandidate[], file: MediaFile, now: number, nowSec: number) {
-    const usable = listed.filter(candidate => isCandidateUsable(candidate, file, now, nowSec));
+    const usable = listed.filter(candidate => player.isCandidateUsable(candidate, file, now, nowSec));
     return usable.length > 0 ? usable[rotation % usable.length] : null;
   }
 
@@ -911,6 +900,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   /** Every representation of the file's video of its kind, and for video of its codec (`codecs` from the playinfo) */
   function warmUp(file: MediaFile) {
     const now = performance.now();
+    const nowSec = Date.now() / 1000;
     const files = player.filesOf(file.videoKey);
     for (let i = 0, len = files.length; i < len; i++) {
       const other = files[i];
@@ -922,7 +912,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       }
       const candidates = player.candidates(other);
       // Nothing usable right now: a request for it fetches the normal way
-      if (defaultCandidate(candidates, other, now) === null) {
+      if (!candidates.some(candidate => player.isCandidateUsable(candidate, other, now, nowSec))) {
         continue;
       }
       const range: ByteRange = { start: 0, end: other.segmentBase.index.end };
@@ -1021,39 +1011,6 @@ function segment(start: number, end: number): Segment {
   return { end, frontier: start, attempts: new Set(), tries: 0, tried: new Set(), extra: 0, queued: false };
 }
 
-/**
- * Take a chunk an attempt received. Every attempt starts at or below its piece's frontier and the
- * frontier only moves forward, so a piece always holds a contiguous run: bytes below the frontier
- * were written by another attempt and are compared instead, bytes above it are written.
- *
- * - `overrun`: the attempt is past its piece's end (the piece is done or shrunk), stop it
- * - `mismatch`: two responses disagree about the file's content
- */
-function writeChunk(job: Job, att: Attempt, chunk: Uint8Array): 'ok' | 'overrun' | 'mismatch' {
-  const { seg, pos } = att;
-  const usable = job.state === 'running' ? Math.min(chunk.byteLength, seg.end + 1 - pos) : 0;
-  if (usable <= 0) {
-    return 'overrun';
-  }
-  const base = job.range.start;
-  const duplicateEnd = Math.min(pos + usable, seg.frontier);
-  for (let offset = pos; offset < duplicateEnd; offset++) {
-    if (job.bytes[offset - base] !== chunk[offset - pos]) {
-      return 'mismatch';
-    }
-  }
-  if (pos + usable > seg.frontier) {
-    const fresh = chunk.subarray(seg.frontier - pos, usable);
-    job.bytes.set(fresh, seg.frontier - base);
-    job.covered += fresh.byteLength;
-    seg.frontier = pos + usable;
-    seg.tried.clear();
-    job.lastProgressAt = performance.now();
-  }
-  att.pos = pos + usable;
-  return usable < chunk.byteLength ? 'overrun' : 'ok';
-}
-
 /** An attempt's speed over the last half second, or since its first byte when the history is short */
 function recentRate(att: Attempt, now: number): number {
   const { meter } = att;
@@ -1091,6 +1048,33 @@ function splitPoint(seg: Segment, r: number, { ttfb, rate }: HostEstimate): numb
 function withLoad(estimate: HostEstimate, load: [receiving: number, rate: number] | undefined, bytes: number): HostEstimate {
   const rate = load === undefined || load[1] <= 0 ? estimate.rate : Math.min(estimate.rate, load[1] / load[0]);
   return rate === estimate.rate ? estimate : { ...estimate, rate, eta: estimate.ttfb + bytes / rate };
+}
+
+/** Of `hosts`, those with room for one more piece, of `only` if given, not those on `avoid` if given */
+function eligible(hosts: HostOption[], avoid: Segment | null, only: ReadonlySet<string> | null) {
+  const taken = new Set<string>();
+  if (avoid !== null) {
+    for (const att of avoid.attempts) {
+      taken.add(att.hostname);
+    }
+  }
+  return hosts.filter(option => option.active < HOST_CAP && !taken.has(option.hostname) && (only === null || only.has(option.hostname)));
+}
+
+/**
+ * Of `hosts`, those a piece may go to on its own, busy or not: the measured ones expected to finish
+ * it within `ETA_BAND` of the best. `null` when none is measured: any host may take it
+ */
+function ownersOf(hosts: HostOption[]): Set<string> | null {
+  const measured = hosts.filter(option => option.estimate.measured);
+  const best = Math.min(...measured.map(option => option.estimate.eta));
+  const owners = new Set<string>();
+  for (let i = 0, len = measured.length; i < len; i++) {
+    if (measured[i].estimate.eta <= best * ETA_BAND) {
+      owners.add(measured[i].hostname);
+    }
+  }
+  return owners.size > 0 ? owners : null;
 }
 
 /**
