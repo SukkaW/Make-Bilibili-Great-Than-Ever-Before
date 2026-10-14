@@ -90,7 +90,7 @@ const PRIOR_TTFB = 350;
 const SAMPLES = 8;
 /** A connection idle for longer is probably closed: a new one costs about another first byte */
 const WARM_MS = 30 * 1000;
-/** Nothing arrived from any host for this long: failures are the viewer's network, not the hosts */
+/** Nothing arrived from any host for this long while requests ran: failures are the viewer's network, not the hosts */
 const NETWORK_DOWN_MS = 3000;
 /** Failures that the viewer's own network going away produces on every host at once */
 const CONNECTION_FAILURES = new Set<MediaOutcome>([
@@ -139,7 +139,7 @@ export function typicalSpeed(file: MediaFile) {
   return { ttfb: ttfbs.length > 0 ? p50(ttfbs) : PRIOR_TTFB, rate: rates.length > 0 ? p50(rates) : PRIOR_RATE };
 }
 
-/** Bytes arrived from some host: the network works */
+/** Bytes arrived from some host, or work resumed after idle: the network works as of now */
 export function noteBytes(now: number) {
   lastBytesAt = now;
 }

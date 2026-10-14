@@ -623,6 +623,10 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     };
     rotation++;
     busy.set(hostname, (busy.get(hostname) ?? 0) + 1);
+    // Work resumes after idle: silence from every host means the network is down only from here on
+    if (running.size === 0) {
+      model.noteBytes(att.startedAt);
+    }
     running.add(att);
     seg.attempts.add(att);
     seg.tried.add(hostname);
@@ -752,7 +756,8 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   /**
    * A race is for the first byte. Once both racers are receiving, the one behind only competes
    * with the leader for the same line and bytes: it goes, whatever the speeds. One still without
-   * a first byte goes once the leader has `LAGGARD_BYTES`
+   * a first byte goes once the leader has `LAGGARD_BYTES` received since it started: the racer
+   * rescuing a leader gone silent stays
    */
   function settleRace(seg: Segment) {
     let leader: Attempt | null = null;
@@ -762,7 +767,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       }
     }
     for (const att of seg.attempts) {
-      if (att !== leader && (!att.probe || att.bytes >= PROBE_BYTES) && (att.firstByteAt === 0 ? leader!.bytes >= LAGGARD_BYTES : att.pos < leader!.pos)) {
+      if (att !== leader && (!att.probe || att.bytes >= PROBE_BYTES) && (att.firstByteAt === 0 ? leader!.bytes >= LAGGARD_BYTES && leader!.lastByteAt > att.startedAt : att.pos < leader!.pos)) {
         abortAttempt(att, MediaOutcome.Canceled);
       }
     }
