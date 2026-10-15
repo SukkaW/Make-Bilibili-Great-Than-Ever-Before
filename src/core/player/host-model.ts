@@ -3,7 +3,7 @@
  *
  * - Speed: per host and video, its recent first-byte times, transfer rates and chunk gaps. An
  *   edge's speed depends on whether it has the video cached, so the next video starts unmeasured.
- * - Reliability: cooldowns, files a host lacks, dead addresses.
+ * - Reliability: cooldowns, files a host lacks.
  */
 
 import flru from 'flru';
@@ -31,8 +31,6 @@ export enum MediaOutcome {
   NoRange = 'no-range',
   /** Redirected off to a P2P CDN */
   Redirect = 'redirect',
-  /** 401 / 403 with a signature past its deadline */
-  Expired = 'expired',
   /** 401 / 403 */
   Refused = 'refused',
   /** 404 / 410 */
@@ -90,7 +88,7 @@ const PRIOR_TTFB = 350;
 const SAMPLES = 8;
 /** A connection idle for longer is probably closed: a new one costs about another first byte */
 const WARM_MS = 30 * 1000;
-/** Nothing arrived from any host for this long: failures are the viewer's network, not the hosts */
+/** Nothing arrived from any host for this long while requests ran: failures are the viewer's network, not the hosts */
 const NETWORK_DOWN_MS = 3000;
 /** Failures that the viewer's own network going away produces on every host at once */
 const CONNECTION_FAILURES = new Set<MediaOutcome>([
@@ -106,8 +104,6 @@ const hosts = new Map<string, HostRecord>();
 const speeds = flru<Map<string, Speed>>(32);
 /** file key -> hostname -> excluded until */
 const exclusions = flru<Map<string, number>>(256);
-/** Signed addresses (pathname + search) no host will serve */
-const bannedAddresses = flru<true>(512);
 /** Last time bytes arrived from any host */
 let lastBytesAt = -Infinity;
 
@@ -139,7 +135,7 @@ export function typicalSpeed(file: MediaFile) {
   return { ttfb: ttfbs.length > 0 ? p50(ttfbs) : PRIOR_TTFB, rate: rates.length > 0 ? p50(rates) : PRIOR_RATE };
 }
 
-/** Bytes arrived from some host: the network works */
+/** Bytes arrived from some host, or work resumed after idle: the network works as of now */
 export function noteBytes(now: number) {
   lastBytesAt = now;
 }
@@ -150,10 +146,6 @@ export function isCoolingDown(hostname: string, now: number) {
 
 export function isExcluded(hostname: string, file: MediaFile, now: number) {
   return (exclusions.get(file.key)?.get(hostname) ?? 0) > now;
-}
-
-export function isAddressBanned(key: string) {
-  return bannedAddresses.has(key);
 }
 
 /**
@@ -178,7 +170,7 @@ export function recordSpeed(hostname: string, file: MediaFile, sample: { ttfb: n
  * @param alive another request to the host is delivering right now: a connection-level failure
  * is then one bad connection, and the host stays available for the retry
  */
-export function recordOutcome(hostname: string, file: MediaFile, addressKey: string, outcome: MediaOutcome, now: number, alive: boolean) {
+export function recordOutcome(hostname: string, file: MediaFile, outcome: MediaOutcome, now: number, alive: boolean) {
   get(hostname).lastUsedAt = now;
   if (CONNECTION_FAILURES.has(outcome) && (alive || now - lastBytesAt > NETWORK_DOWN_MS)) {
     return;
@@ -202,9 +194,6 @@ export function recordOutcome(hostname: string, file: MediaFile, addressKey: str
     case MediaOutcome.Missing:
     case MediaOutcome.Integrity:
       exclude(hostname, file, Infinity);
-      break;
-    case MediaOutcome.Expired:
-      bannedAddresses.set(addressKey, true);
       break;
     case MediaOutcome.Refused:
       // Every host only gets signatures it verifies (upos ones, Akamai its own): a refusal in

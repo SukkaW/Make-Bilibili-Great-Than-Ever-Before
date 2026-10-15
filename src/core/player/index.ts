@@ -35,8 +35,6 @@ export interface MediaPolicyPhase {
 /** A media XHR that could be answered with a synthetic response */
 export interface MediaXhrRequest {
   readonly ctx: XhrSendContext,
-  /** The URL the XHR was opened with */
-  readonly address: MediaAddress,
   /** The request's single bounded `Range`, `null` if it has none */
   readonly range: ByteRange | null,
   /** `null` if no playinfo listed it */
@@ -68,6 +66,8 @@ export const player = {
   hosts,
   /** Every acceptable URL of a file, for requests of its own (the warm-up) */
   candidates: acceptableCandidates,
+  /** A candidate not about to expire, on a host not known to lack the file */
+  isCandidateUsable,
   /** Every representation of a video, as its newest playinfo listed them */
   filesOf,
   registerPhase
@@ -258,5 +258,5 @@ function toMediaXhrRequest(ctx: XhrSendContext): MediaXhrRequest | null {
   }
   const file = findFile(address);
   const candidates = file === null ? [] : acceptableCandidates(file, address);
-  return { ctx, address, range, file, candidates, requested: findCandidate(candidates, address) };
+  return { ctx, range, file, candidates, requested: findCandidate(candidates, address) };
 }

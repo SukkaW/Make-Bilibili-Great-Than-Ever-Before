@@ -17,50 +17,37 @@ const rangeHeaderRegex = /^bytes=(\d+)-(\d+)$/i;
 
 /** A single bounded `Range: bytes=a-b` request header; anything else returns `null` */
 export function parseRangeHeader(value: string): ByteRange | null {
-  const match = rangeHeaderRegex.exec(value.trim());
-  return match ? toByteRange(match[1], match[2]) : null;
+  return toByteRange(rangeHeaderRegex.exec(value.trim()));
 }
 
 const contentRangeRegex = /^bytes (\d+)-(\d+)\/(\d+|\*)$/i;
 
 export function parseContentRange(value: string | null): ContentRange | null {
-  if (value === null) {
-    return null;
-  }
-  const match = contentRangeRegex.exec(value.trim());
-  if (!match) {
-    return null;
-  }
-  const range = toByteRange(match[1], match[2]);
-  if (!range) {
+  const match = value === null ? null : contentRangeRegex.exec(value.trim());
+  const range = toByteRange(match);
+  if (match === null || range === null) {
     return null;
   }
   if (match[3] === '*') {
     return { ...range, total: null };
   }
   const total = Number(match[3]);
-  if (!Number.isSafeInteger(total) || total <= range.end) {
-    return null;
-  }
-  return { ...range, total };
+  return Number.isSafeInteger(total) && total > range.end ? { ...range, total } : null;
 }
 
 const byteRangeSpecRegex = /^(\d+)-(\d+)$/;
 
 /** Byte ranges in Bilibili's DASH `SegmentBase`, e.g. `'0-1011'` */
 export function parseByteRangeSpec(value: unknown): ByteRange | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const match = byteRangeSpecRegex.exec(value.trim());
-  return match ? toByteRange(match[1], match[2]) : null;
+  return typeof value === 'string' ? toByteRange(byteRangeSpecRegex.exec(value.trim())) : null;
 }
 
-function toByteRange(startStr: string, endStr: string): ByteRange | null {
-  const start = Number(startStr);
-  const end = Number(endStr);
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start) {
+/** The first two groups of a match as a range: `null` unless both are safe integers, in order */
+function toByteRange(match: RegExpExecArray | null): ByteRange | null {
+  if (match === null) {
     return null;
   }
-  return { start, end };
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start <= end ? { start, end } : null;
 }

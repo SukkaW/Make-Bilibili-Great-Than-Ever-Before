@@ -59,12 +59,11 @@ export function noteHost(address: MediaAddress) {
   }
 }
 
-/** @returns `null` if the JSON is not a DASH playinfo */
-export function ingestPlayinfo(json: object, meta: string): MediaFile[] | null {
+export function ingestPlayinfo(json: object, meta: string) {
   const dash = extractDash(json as Record<string, unknown>);
   if (!dash) {
     logger.warn('Invalid Bilibili Playinfo data', { json });
-    return null;
+    return;
   }
 
   const listed: Array<{ kind: MediaKind, representation: Record<string, unknown>, addresses: MediaAddress[], known: MediaFile | null }> = [];
@@ -102,8 +101,6 @@ export function ingestPlayinfo(json: object, meta: string): MediaFile[] | null {
   filesByVideo.set(videoKey, files);
 
   logger.info('CDN URLs extracted', { meta });
-
-  return files;
 }
 
 /** As listed by the newest playinfo: the freshest signed addresses, whichever one was requested */

@@ -19,9 +19,6 @@ const userScriptMetaBlockConfig = {
   }
 };
 
-/** Tells debug builds apart: their saved playback metrics start over with each one */
-const debugBuildId = Date.now().toString(36);
-
 export default defineConfig(
   ([
     [
@@ -59,7 +56,6 @@ export default defineConfig(
             values: {
               'process.env.NODE_ENV': JSON.stringify('production'),
               'process.env.DEBUG': String(debug),
-              'process.env.BUILD_ID': debug ? JSON.stringify(debugBuildId) : 'undefined',
               'typeof window': JSON.stringify('object'),
               globalThis: 'unsafeWindow'
             }

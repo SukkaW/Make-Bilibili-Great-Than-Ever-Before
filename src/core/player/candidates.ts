@@ -15,7 +15,7 @@
 import { addArrayElementsToSet } from 'foxts/add-array-elements-to-set';
 import { pickOne } from 'foxts/pick-random';
 import { isAkamaiHost, isMirrorHost, isP2PCDNDomain } from './cdn-classify';
-import { isAddressBanned, isCoolingDown, isExcluded } from './host-model';
+import { isCoolingDown, isExcluded } from './host-model';
 import { upgcxcodeHosts } from './registry';
 import type { MediaAddress, MediaFile } from './registry';
 
@@ -40,14 +40,8 @@ export enum CandidateTier {
   P2P = 6
 }
 
-/** One URL a media request could go to */
-export interface MediaCandidate {
-  readonly href: string,
-  readonly hostname: string,
-  /** pathname + search: the signed address, whatever the host */
-  readonly key: string,
-  /** When the signature expires, unix seconds, `0` if unknown */
-  readonly deadline: number,
+/** One URL a media request could go to: an address, and how it ranks before anything is measured */
+export interface MediaCandidate extends MediaAddress {
   readonly tier: CandidateTier,
   /** Served by a P2P / PCDN host */
   readonly p2p: boolean
@@ -104,29 +98,23 @@ export function mediaCandidates(requested: MediaAddress | null, file: MediaFile 
     const source = sources[i];
     add(asListed(source));
 
-    const { key, deadline } = source;
+    const { key } = source;
     if (source.pathname.includes('/upgcxcode/') && !isAkamaiHost(source.hostname) && !moved.has(key)) {
       moved.add(key);
       for (let j = 0, count = upgcxcodeHosts.length; j < count; j++) {
         const hostname = upgcxcodeHosts[j];
-        add({
-          href: `https://${hostname}${key}`,
-          hostname,
-          key,
-          deadline,
-          tier: tierOnHost(hostname),
-          p2p: false
-        });
+        // The path is an upgcxcode one wherever it is moved: only the host tells mirror from PoP
+        const mirror = isMirrorHost(hostname);
+        add({ ...source, href: `https://${hostname}${key}`, hostname, class: mirror ? 'mirror' : 'bcache', tier: mirror ? CandidateTier.Mirror : CandidateTier.Bcache, p2p: false });
       }
     }
   }
   return candidates;
 }
 
-/** Not banned, not about to expire, and this host does not lack the file */
+/** Not about to expire, and this host does not lack the file */
 export function isCandidateUsable(candidate: MediaCandidate, file: MediaFile | null, now: number, nowSec: number) {
-  return !isAddressBanned(candidate.key)
-    && (candidate.deadline === 0 || (candidate.deadline - nowSec) * 1000 > DEADLINE_MARGIN_MS)
+  return (candidate.deadline === 0 || (candidate.deadline - nowSec) * 1000 > DEADLINE_MARGIN_MS)
     && (file === null || !isExcluded(candidate.hostname, file, now));
 }
 
@@ -175,26 +163,12 @@ function upgcxcodeHostsOf(file: MediaFile | null) {
   return Array.from(names).filter(hostname => !isP2PCDNDomain(hostname) && !isAkamaiHost(hostname));
 }
 
-/** A signature moved onto an upgcxcode host (never a P2P one, never Akamai) */
-function tierOnHost(hostname: string) {
-  // The path is an upgcxcode one wherever it is moved: only the host tells mirror from PoP
-  return isMirrorHost(hostname) ? CandidateTier.Mirror : CandidateTier.Bcache;
-}
-
 /** An address as it was given: non-P2P ones over HTTPS, P2P ones untouched (their own ports) */
 function asListed(source: MediaAddress): MediaCandidate {
-  const { hostname, key, deadline } = source;
-  const p2p = isP2PCDNDomain(hostname) || source.class === 'mcdn-upgcxcode' || source.class === 'mcdn-tf' || source.class === 'szbdyd';
-  if (p2p) {
-    return { href: source.href, hostname, key, deadline, tier: CandidateTier.P2P, p2p };
+  const { hostname, class: cls } = source;
+  if (cls === 'mcdn-upgcxcode' || cls === 'mcdn-tf' || cls === 'szbdyd' || isP2PCDNDomain(hostname)) {
+    return { ...source, tier: CandidateTier.P2P, p2p: true };
   }
-  let tier: CandidateTier;
-  if (PROXY_HOST_RE.test(hostname)) {
-    tier = CandidateTier.Proxy;
-  } else if (source.class === 'bcache') {
-    tier = CandidateTier.ListedBcache;
-  } else {
-    tier = CandidateTier.ListedMirror;
-  }
-  return { href: `https://${hostname}${key}`, hostname, key, deadline, tier, p2p };
+  const tier = PROXY_HOST_RE.test(hostname) ? CandidateTier.Proxy : (cls === 'bcache' ? CandidateTier.ListedBcache : CandidateTier.ListedMirror);
+  return { ...source, href: `https://${hostname}${source.key}`, tier, p2p: false };
 }

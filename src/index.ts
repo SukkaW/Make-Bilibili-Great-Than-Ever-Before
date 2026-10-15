@@ -25,9 +25,7 @@ declare global {
   const process: {
     env: {
       NODE_ENV: 'development' | 'production',
-      DEBUG?: 'true' | 'false',
-      /** Debug builds only: different for every build, see `rollup.config.ts` */
-      BUILD_ID?: string
+      DEBUG?: 'true' | 'false'
     }
   };
 }
@@ -80,9 +78,6 @@ declare global {
     },
     onXhrOpen(cb) {
       xhrHooks.open.add(cb);
-    },
-    onAfterXhrOpen(cb) {
-      xhrHooks.afterOpen.add(cb);
     },
     onXhrResponse(cb) {
       xhrHooks.response.add(cb);
