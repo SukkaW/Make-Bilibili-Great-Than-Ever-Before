@@ -14,6 +14,8 @@ const knownP2pCdnDomainPattern = createRetrieKeywordFilter([
   'szbdyd.com',
   '.nexusedgeio.com',
   '.ahdohpiechei.com', // 七牛云 PCDN
+  '.mountaintoys.cn',
+  '.bvmlt.top',
 
   'upos-sz-mirror14b.bilivideo.com' // mirror type, upgcxcode, but it has no valid SSL cert, its SSL cert is for PCDN (*.bilivideo.cn)
 ]);
