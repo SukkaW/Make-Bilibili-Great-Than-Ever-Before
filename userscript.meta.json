@@ -15,6 +15,7 @@
   "run-at": "document-start",
   "match": [
     "https://www.bilibili.com/*",
+    "https://player.bilibili.com/player.html*",
     "https://t.bilibili.com/*",
     "https://live.bilibili.com/*",
     "https://space.bilibili.com/*"
