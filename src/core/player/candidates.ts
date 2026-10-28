@@ -1,11 +1,13 @@
 /**
  * Every URL a media request could be fetched from, and which one the browser should fetch.
  *
- * A signed upgcxcode address is valid on any upgcxcode host (a Bilibili CDN host serving
- * `/upgcxcode/` paths; P2P / PCDN ones aside, and Akamai aside, which only takes its own signed
- * addresses): the host is not part of the signature. So the candidates of a request are the URL it
- * asked for and every address the playinfo lists for its file, as they are, plus each of those
- * signatures on every upgcxcode host (the file's own, every host seen in any playinfo, the seeds).
+ * A signed upgcxcode address (a path starting with `/upgcxcode/`) is valid on any upgcxcode host (a
+ * Bilibili CDN host serving `/upgcxcode/` paths; P2P / PCDN ones aside, and Akamai aside, which
+ * only takes its own signed addresses): the host is not part of the signature. An MCDN address
+ * wrapping one (`/v1/resource/upgcxcode/...`) is not: it is signed for its own host. So the
+ * candidates of a request are the URL it asked for and every address the playinfo lists for its
+ * file, as they are, plus each of those upgcxcode signatures on every upgcxcode host (the file's
+ * own, every host seen in any playinfo, the seeds).
  *
  * Policy phases (no-p2p) then decide which candidates are acceptable, dropping and converting
  * some. The browser fetches one of what is left natively, and a serve phase (thread-ripper) races
@@ -99,7 +101,7 @@ export function mediaCandidates(requested: MediaAddress | null, file: MediaFile 
     add(asListed(source));
 
     const { key } = source;
-    if (source.pathname.includes('/upgcxcode/') && !isAkamaiHost(source.hostname) && !moved.has(key)) {
+    if (source.pathname.startsWith('/upgcxcode/') && !isAkamaiHost(source.hostname) && !moved.has(key)) {
       moved.add(key);
       for (let j = 0, count = upgcxcodeHosts.length; j < count; j++) {
         const hostname = upgcxcodeHosts[j];
