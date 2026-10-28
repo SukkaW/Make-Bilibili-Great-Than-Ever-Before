@@ -1,33 +1,33 @@
 import type { MakeBilibiliGreatThanEverBeforeModule } from '../types';
+import { openSettingsPanel } from './settings-panel';
+import type { ModuleSettingsStore } from './settings-panel';
+
+/**
+ * Which modules run: the userscript manager stores each one's switch. A single menu command opens
+ * the settings panel, where any number of them are switched before one reload applies them all:
+ * a module's injections can't be undone in a running page.
+ */
 
 const KEY_PREFIX = 'mbgtbemodule:';
 
-export function initModuleMenu(mod: MakeBilibiliGreatThanEverBeforeModule) {
-  const enabled = getEnabled(mod);
+export function isModuleEnabled(mod: MakeBilibiliGreatThanEverBeforeModule) {
+  return GM_getValue<boolean>(KEY_PREFIX + mod.name, mod.defaultEnabled ?? true);
+}
 
-  GM.registerMenuCommand(labelFor(enabled, mod), async () => {
-    const current = getEnabled(mod);
-    await setEnabled(mod, !current);
-    try {
-      unsafeWindow.location.reload();
-    } catch {
-      // swallow
+const store: ModuleSettingsStore = {
+  isEnabled: isModuleEnabled,
+  setEnabled: (mod, enabled) => GM.setValue(KEY_PREFIX + mod.name, enabled),
+  // Back to `defaultEnabled`
+  reset: mod => GM.deleteValue(KEY_PREFIX + mod.name)
+};
+
+/** @param modules every module, as this page runs them */
+export function initModuleMenu(modules: readonly MakeBilibiliGreatThanEverBeforeModule[]) {
+  const running = new Set<string>();
+  for (let i = 0, len = modules.length; i < len; i++) {
+    if (isModuleEnabled(modules[i])) {
+      running.add(modules[i].name);
     }
-  });
-
-  return enabled;
-}
-
-function getEnabled(m: MakeBilibiliGreatThanEverBeforeModule) {
-  return GM_getValue<boolean>(KEY_PREFIX + m.name, m.defaultEnabled ?? true);
-}
-
-function setEnabled(m: MakeBilibiliGreatThanEverBeforeModule, enabled: boolean) {
-  return GM.setValue(KEY_PREFIX + m.name, enabled);
-}
-
-function labelFor(enabled: boolean, m: MakeBilibiliGreatThanEverBeforeModule) {
-  // use ASCII-friendly symbols to avoid linter/encoding issues
-  const mark = enabled ? '[ON]' : '[OFF]';
-  return `${mark} ${m.description}`;
+  }
+  GM.registerMenuCommand('打开设置', () => openSettingsPanel(modules, running, store));
 }
