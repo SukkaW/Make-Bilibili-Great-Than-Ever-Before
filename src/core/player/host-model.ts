@@ -3,12 +3,12 @@
  *
  * - Speed: per host and video, its recent first-byte times, transfer rates and chunk gaps. An
  *   edge's speed depends on whether it has the video cached, so the next video starts unmeasured.
- * - Reliability: cooldowns, files a host lacks.
+ * - Reliability: cooldowns, files a host lacks, signed addresses it refuses.
  */
 
 import flru from 'flru';
 import { p50 } from 'fast-percentile';
-import type { MediaFile } from './registry';
+import type { MediaAddress, MediaFile } from './registry';
 
 /** How a media request ended, from the point of view of its host, address and file */
 export enum MediaOutcome {
@@ -102,7 +102,7 @@ const CONNECTION_FAILURES = new Set<MediaOutcome>([
 const hosts = new Map<string, HostRecord>();
 /** video key -> hostname -> speed */
 const speeds = flru<Map<string, Speed>>(32);
-/** file key -> hostname -> excluded until */
+/** file key -> hostname, or the URL of one signed address on it -> excluded until */
 const exclusions = flru<Map<string, number>>(256);
 /** Last time bytes arrived from any host */
 let lastBytesAt = -Infinity;
@@ -144,8 +144,10 @@ export function isCoolingDown(hostname: string, now: number) {
   return get(hostname).cooldownUntil > now;
 }
 
-export function isExcluded(hostname: string, file: MediaFile, now: number) {
-  return (exclusions.get(file.key)?.get(hostname) ?? 0) > now;
+/** The host lacks the file, or refuses this signed address of it */
+export function isExcluded({ hostname, href }: Pick<MediaAddress, 'hostname' | 'href'>, file: MediaFile, now: number) {
+  const byHost = exclusions.get(file.key);
+  return byHost !== undefined && ((byHost.get(hostname) ?? 0) > now || (byHost.get(href) ?? 0) > now);
 }
 
 /**
@@ -167,10 +169,12 @@ export function recordSpeed(hostname: string, file: MediaFile, sample: { ttfb: n
 }
 
 /**
+ * @param address the URL the request went to
  * @param alive another request to the host is delivering right now: a connection-level failure
  * is then one bad connection, and the host stays available for the retry
  */
-export function recordOutcome(hostname: string, file: MediaFile, outcome: MediaOutcome, now: number, alive: boolean) {
+export function recordOutcome(address: Pick<MediaAddress, 'hostname' | 'href'>, file: MediaFile, outcome: MediaOutcome, now: number, alive: boolean) {
+  const { hostname } = address;
   get(hostname).lastUsedAt = now;
   if (CONNECTION_FAILURES.has(outcome) && (alive || now - lastBytesAt > NETWORK_DOWN_MS)) {
     return;
@@ -196,9 +200,9 @@ export function recordOutcome(hostname: string, file: MediaFile, outcome: MediaO
       exclude(hostname, file, Infinity);
       break;
     case MediaOutcome.Refused:
-      // Every host only gets signatures it verifies (upos ones, Akamai its own): a refusal in
-      // time is between this host and this file
-      exclude(hostname, file, now + 60 * 1000);
+      // A host may refuse one signature of a file and take the others (bcache nodes refuse some
+      // storages' `os`): a refusal in time is between this host and this signed address
+      exclude(address.href, file, now + 60 * 1000);
       break;
     case MediaOutcome.Throttled:
       cooldown(host, now, 2000 * (2 ** Math.min(host.failureStreak, 3)));

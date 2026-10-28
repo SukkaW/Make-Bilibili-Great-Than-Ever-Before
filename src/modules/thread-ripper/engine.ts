@@ -544,7 +544,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     const { hostname, job } = att;
     const now = performance.now();
     // A slow first byte or a stall on a host that delivered just now is that request's, not the host's
-    model.recordOutcome(hostname, job.file, outcome, now, now - (lastDelivery.get(hostname) ?? -Infinity) < ALIVE_MS);
+    model.recordOutcome(att.candidate, job.file, outcome, now, now - (lastDelivery.get(hostname) ?? -Infinity) < ALIVE_MS);
 
     const received = att.bytes - att.firstChunkBytes;
     const delivered = outcome === MediaOutcome.Ok || outcome === MediaOutcome.Canceled;

@@ -114,10 +114,10 @@ export function mediaCandidates(requested: MediaAddress | null, file: MediaFile 
   return candidates;
 }
 
-/** Not about to expire, and this host does not lack the file */
+/** Not about to expire, and this host neither lacks the file nor refuses this address of it */
 export function isCandidateUsable(candidate: MediaCandidate, file: MediaFile | null, now: number, nowSec: number) {
   return (candidate.deadline === 0 || (candidate.deadline - nowSec) * 1000 > DEADLINE_MARGIN_MS)
-    && (file === null || !isExcluded(candidate.hostname, file, now));
+    && (file === null || !isExcluded(candidate, file, now));
 }
 
 /** The candidate a request made for this address stands for, `null` if it is not acceptable */

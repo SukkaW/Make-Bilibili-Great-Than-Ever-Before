@@ -66,7 +66,7 @@ export const player = {
   hosts,
   /** Every acceptable URL of a file, for requests of its own (the warm-up) */
   candidates: acceptableCandidates,
-  /** A candidate not about to expire, on a host not known to lack the file */
+  /** A candidate not about to expire, on a host not known to lack the file or to refuse it */
   isCandidateUsable,
   /** Every representation of a video, as its newest playinfo listed them */
   filesOf,
