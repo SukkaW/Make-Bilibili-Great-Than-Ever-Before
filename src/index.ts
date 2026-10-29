@@ -16,7 +16,7 @@ import type { FetchArgs, MakeBilibiliGreatThanEverBeforeHook, MakeBilibiliGreatT
 import disableAV1 from './modules/disable-av1';
 import defuseStorage from './modules/defuse-storage';
 import forceEnable4K from './modules/force-enable-4k';
-import { initModuleMenu } from './utils/module-menu';
+import { initModuleMenu, isModuleEnabled } from './utils/module-menu';
 import { initPlayerInterceptor, player } from './core/player';
 import { PatchedXMLHttpRequest, xhrHooks } from './utils/xhr-override';
 import { disguiseAsNative } from './utils/fake-native-function';
@@ -96,11 +96,12 @@ declare global {
   const hostname = unsafeWindow.location.hostname;
   const pathname = unsafeWindow.location.pathname;
 
+  initModuleMenu(modules);
+
   for (let i = 0, len = modules.length; i < len; i++) {
     const mod = modules[i];
 
-    const enabled = initModuleMenu(mod);
-    if (!enabled) {
+    if (!isModuleEnabled(mod)) {
       logger.log(`[${mod.name}] disabled -- skipping`);
       continue;
     }
