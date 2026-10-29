@@ -60,6 +60,12 @@ const MAX_SERVED_LENGTH = 64 * MiB;
 const MAX_TRIES = 6;
 /** Committed, but no byte arrived for this long: the job fails */
 const JOB_STALL_MS = 8000;
+/**
+ * Nothing in flight, and no host to send a piece to (every one cooling down or excluded) for this
+ * long: the job fails rather than wait for one to come back, and the player's retry goes to the
+ * browser
+ */
+const NO_HOST_MS = 1000;
 const TICK_MS = 50;
 /** Duplicates per piece at most */
 const MAX_EXTRA = 2;
@@ -178,7 +184,9 @@ interface Job {
   total: number | null,
   /** Distinct bytes written: the XHR progress */
   covered: number,
-  lastProgressAt: number
+  lastProgressAt: number,
+  /** Since when nothing of it is in flight and no host could take it, `0` = not so */
+  hostlessSince: number
 }
 
 type JobParams = Pick<Job, 'file' | 'range' | 'served' | 'cls'> & { candidates: readonly MediaCandidate[] };
@@ -247,7 +255,8 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       committed: false,
       total: totals.get(file.key) ?? null,
       covered: 0,
-      lastProgressAt: now
+      lastProgressAt: now,
+      hostlessSince: 0
     };
     jobs.add(job);
     if (sink) {
@@ -544,7 +553,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
     const { hostname, job } = att;
     const now = performance.now();
     // A slow first byte or a stall on a host that delivered just now is that request's, not the host's
-    model.recordOutcome(hostname, job.file, outcome, now, now - (lastDelivery.get(hostname) ?? -Infinity) < ALIVE_MS);
+    model.recordOutcome(att.candidate, job.file, outcome, now, now - (lastDelivery.get(hostname) ?? -Infinity) < ALIVE_MS);
 
     const received = att.bytes - att.firstChunkBytes;
     const delivered = outcome === MediaOutcome.Ok || outcome === MediaOutcome.Canceled;
@@ -729,6 +738,14 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
   function tickJob(job: Job, now: number) {
     if (job.committed && now - job.lastProgressAt > JOB_STALL_MS) {
       giveUp(job, 'no progress');
+      return;
+    }
+    if (job.segments.some(seg => seg.attempts.size > 0) || hostsOf(job, 0, now).length > 0) {
+      job.hostlessSince = 0;
+    } else if (job.hostlessSince === 0) {
+      job.hostlessSince = now;
+    } else if (now - job.hostlessSince > NO_HOST_MS) {
+      giveUp(job, 'no host left to take it');
       return;
     }
 
@@ -967,6 +984,8 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
         reason = 'range too long';
       } else if ((nativeRetry.get(`${file.key}:${range.start}-${range.end}`) ?? 0) > now) {
         reason = 'it failed just now';
+      } else if (!candidates.some(candidate => !model.isCoolingDown(candidate.hostname, now) && player.isCandidateUsable(candidate, file, now, Date.now() / 1000))) {
+        reason = 'no host can take it right now';
       }
       if (reason !== null || range === null || file === null || requested === null) {
         if (process.env.DEBUG) {

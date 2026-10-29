@@ -68,13 +68,18 @@ export function isKnownNonVideoUrl(url: string | ReadonlyURL): boolean {
  *   details in https://rec.danmuji.org/dev/cdn-info/ )
  * - `mcdn-upgcxcode`: P2P CDN serving an upgcxcode path (`*.mcdn.bilivideo.*`, HTTP 302 P2P CDN,
  *   mirror with `os=mcdn`): the path works on any upgcxcode host
- * - `mcdn-tf`: pure IP / mcdn CDN with its own `/v1/resource` path
+ * - `mcdn-tf`: pure IP / mcdn CDN with its own `/v1/resource` path, an upgcxcode one inside
+ *   included (`/v1/resource/upgcxcode/...`): it is signed for that host alone, every other host
+ *   answers 403
  * - `szbdyd`: deprecated PCDN, the real host is in `xy_usource`
  */
 export type CdnUrlClass = 'mirror' | 'bcache' | 'mcdn-upgcxcode' | 'mcdn-tf' | 'szbdyd' | 'unknown';
 
 export function classifyCdnUrl(url: ReadonlyURL): CdnUrlClass {
   const href = url.href;
+  if (mCdnTfRegex.test(href)) {
+    return 'mcdn-tf';
+  }
   if (href.includes('/upgcxcode/')) {
     if (mirrorRegex.test(href)) {
       // It is possible for a mirror type url to also be a p2p cdn:
@@ -86,9 +91,6 @@ export function classifyCdnUrl(url: ReadonlyURL): CdnUrlClass {
         : 'mcdn-upgcxcode';
     }
     return isP2PCDNDomain(url.hostname) ? 'mcdn-upgcxcode' : 'bcache';
-  }
-  if (mCdnTfRegex.test(href)) {
-    return 'mcdn-tf';
   }
   if (href.includes('szbdyd.com')) {
     return 'szbdyd';
