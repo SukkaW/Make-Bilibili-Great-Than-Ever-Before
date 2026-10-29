@@ -36,7 +36,7 @@ import { byteRangeLength, parseContentRange } from '../../core/player/range';
 import type { MediaFile } from '../../core/player/registry';
 import type { MakeBilibiliGreatThanEverBeforeHook, XhrResponder } from '../../types';
 import type { SyntheticXhrSink } from '../../utils/xhr-override';
-import { classifyError, classifyResponse, isRetryable } from './classify';
+import { classifyError, classifyResponse, hostnameOf, isRetryable } from './classify';
 import type { AbortReason } from './classify';
 
 const KiB = 1024;
@@ -128,6 +128,8 @@ interface Attempt {
   readonly job: Job,
   readonly seg: Segment,
   readonly hostname: string,
+  /** Where its bytes come from: its host, or the one it was redirected to */
+  source: string,
   readonly candidate: MediaCandidate,
   readonly role: 'primary' | 'dup',
   readonly controller: AbortController,
@@ -175,6 +177,8 @@ interface Job {
   readonly segments: Segment[],
   /** The player's request it answers, `null` for a warm-up */
   readonly sink: SyntheticXhrSink | null,
+  /** Where the bytes written came from, hostname -> bytes: the player's statistics panel shows it */
+  readonly sources: Map<string, number>,
   /** From the first valid response: the warm-up's copy is served with it */
   contentType: string,
   state: 'running' | 'done' | 'failed',
@@ -250,6 +254,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       bytes: new unsafeWindow.Uint8Array(buffer),
       segments: [],
       sink,
+      sources: new Map(),
       contentType: '',
       state: 'running',
       committed: false,
@@ -387,6 +392,9 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       return outcome === MediaOutcome.Ok ? MediaOutcome.Truncated : outcome;
     }
     att.headersAt = performance.now();
+    if (response.redirected) {
+      att.source = hostnameOf(response.url) || att.hostname;
+    }
     commit(job, response, contentRange.total);
 
     const reader = response.body.getReader();
@@ -489,6 +497,13 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       seg.frontier = pos + usable;
       seg.tried.clear();
       job.lastProgressAt = now;
+      if (job.sink) {
+        const first = job.sources.size === 0;
+        job.sources.set(att.source, (job.sources.get(att.source) ?? 0) + fresh.byteLength);
+        if (first) {
+          player.noteSources(job.file, job.sources);
+        }
+      }
     }
     att.pos = pos + usable;
 
@@ -636,6 +651,7 @@ export function createThreadRipper(player: MakeBilibiliGreatThanEverBeforeHook['
       job,
       seg,
       hostname,
+      source: hostname,
       candidate,
       role,
       controller: new AbortController(),
