@@ -7,8 +7,9 @@
  *   requested URL if it is acceptable, else to an acceptable one
  * - serve (`thread-ripper`): take over the download of a media XHR, or leave it to the browser
  *
- * With no phase registered, the interceptor only reads. Not a module: the bootstrap starts it before
- * any module runs, and modules reach it through `hook.player`.
+ * With no phase registered, the interceptor only reads; with one, the player's statistics panel
+ * names the hosts the bytes really came from (`stats-panel.ts`). Not a module: the bootstrap starts
+ * it before any module runs, and modules reach it through `hook.player`.
  */
 
 import { never } from 'foxts/guard';
@@ -24,6 +25,7 @@ import { parseRangeHeader } from './range';
 import type { ByteRange } from './range';
 import { filesOf, findFile, ingestPlayinfo, noteHost, toMediaAddress } from './registry';
 import type { MediaAddress, MediaFile } from './registry';
+import { noteSources } from './stats-panel';
 
 export interface MediaPolicyPhase {
   readonly type: 'policy',
@@ -70,6 +72,8 @@ export const player = {
   isCandidateUsable,
   /** Every representation of a video, as its newest playinfo listed them */
   filesOf,
+  /** Where the player's latest request of a kind gets its bytes, for the statistics panel */
+  noteSources,
   registerPhase
 };
 
@@ -80,16 +84,27 @@ export function initPlayerInterceptor(hook: MakeBilibiliGreatThanEverBeforeHook)
   initPlayinfoCapture(hook, ingestPlayinfo);
 
   hook.onXhrSend((ctx) => {
-    if (server === null) {
+    // No phase: requests go where the player sends them, as its statistics panel says
+    if (server === null && policy === null) {
       return null;
     }
     const request = toMediaXhrRequest(ctx);
-    try {
-      return request && server.serve(request);
-    } catch (e) {
-      logger.error(`[player-interceptor] serve phase "${server.name}" failed`, e, { url: ctx.url });
+    if (request === null) {
       return null;
     }
+    let responder: XhrResponder | null = null;
+    if (server !== null) {
+      try {
+        responder = server.serve(request);
+      } catch (e) {
+        logger.error(`[player-interceptor] serve phase "${server.name}" failed`, e, { url: ctx.url });
+      }
+    }
+    // The browser fetches it, from where `route` sent it
+    if (responder === null && request.file !== null) {
+      noteSources(request.file, new Map([[new URL(ctx.url).hostname, 0]]));
+    }
+    return responder;
   });
 }
 
